@@ -10,7 +10,7 @@ from claude_controller.claude_session import ClaudeSession
 from claude_controller.poller import Poller
 
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.DEBUG,
     format="%(asctime)s %(levelname)-8s %(name)s — %(message)s",
     datefmt="%H:%M:%S",
 )

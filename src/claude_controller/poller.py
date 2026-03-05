@@ -89,7 +89,9 @@ class Poller:
     async def _poll_once(self) -> None:
         """Check for new messages and process commands."""
         raw = await self.slack.read_history(SLACK_CHANNEL_ID, limit=5)
+        logger.debug("Raw MCP response (%d chars): %s", len(raw), raw[:500])
         messages = _parse_messages(raw)
+        logger.debug("Parsed %d messages", len(messages))
 
         # Process only new messages (newer than _last_ts)
         new_messages = []
@@ -103,6 +105,9 @@ class Poller:
                 continue
             new_messages.append(msg)
 
+        if new_messages:
+            logger.info("Found %d new message(s)", len(new_messages))
+
         # Process oldest first
         new_messages.sort(key=lambda m: m.get("ts", ""))
 
@@ -110,9 +115,11 @@ class Poller:
             ts = msg.get("ts", "")
             text = msg.get("text", "").strip()
             self._last_ts = ts
+            logger.info("Message [%s]: %s", ts, text[:200])
 
             # Check for !claude prefix
             if not text.startswith(COMMAND_PREFIX):
+                logger.debug("Skipping — no '%s' prefix", COMMAND_PREFIX)
                 continue
 
             # Strip prefix and parse command
