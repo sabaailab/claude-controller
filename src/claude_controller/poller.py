@@ -59,8 +59,9 @@ class Poller:
         self._my_messages: set[str] = set()  # timestamps of our own messages
 
     async def run(self) -> None:
-        """Main polling loop."""
+        """Main polling loop — resilient to transient connection failures."""
         self._running = True
+        self._consecutive_errors = 0
         logger.info("Poller started — watching channel %s every %.0fs",
                      SLACK_CHANNEL_ID, POLL_INTERVAL_SECONDS)
 
@@ -70,20 +71,50 @@ class Poller:
         while self._running:
             try:
                 await self._poll_once()
+                self._consecutive_errors = 0  # reset on success
+            except (ConnectionError, RuntimeError, asyncio.TimeoutError, OSError) as e:
+                self._consecutive_errors += 1
+                backoff = min(30, POLL_INTERVAL_SECONDS * self._consecutive_errors)
+                logger.warning("Poll connection error (%d consecutive): %s — retrying in %.0fs",
+                               self._consecutive_errors, e, backoff)
+                # Restart MCP container after 3 consecutive failures
+                if self._consecutive_errors >= 3:
+                    await self._restart_slack()
+                await asyncio.sleep(backoff)
+                continue
             except Exception as e:
+                self._consecutive_errors += 1
                 logger.error("Poll error: %s", e, exc_info=True)
             await asyncio.sleep(POLL_INTERVAL_SECONDS)
 
     async def _init_last_ts(self) -> None:
         """Set _last_ts to the most recent message so we skip history."""
+        for attempt in range(3):
+            try:
+                raw = await self.slack.read_history(SLACK_CHANNEL_ID, limit=1)
+                messages = _parse_messages(raw)
+                if messages:
+                    self._last_ts = messages[0].get("ts", "")
+                    logger.info("Initialized last_ts: %s", self._last_ts)
+                return
+            except Exception as e:
+                logger.warning("Could not init last_ts (attempt %d/3): %s", attempt + 1, e)
+                if attempt < 2:
+                    await asyncio.sleep(5)
+
+    async def _restart_slack(self) -> None:
+        """Restart the Slack MCP container to recover from connection failures."""
+        logger.info("Restarting Slack MCP container...")
         try:
-            raw = await self.slack.read_history(SLACK_CHANNEL_ID, limit=1)
-            messages = _parse_messages(raw)
-            if messages:
-                self._last_ts = messages[0].get("ts", "")
-                logger.info("Initialized last_ts: %s", self._last_ts)
+            await self.slack.stop()
+        except Exception:
+            pass
+        try:
+            await self.slack.start()
+            self._consecutive_errors = 0
+            logger.info("Slack MCP container restarted successfully")
         except Exception as e:
-            logger.warning("Could not init last_ts: %s", e)
+            logger.error("Failed to restart Slack MCP container: %s", e)
 
     async def _poll_once(self) -> None:
         """Check for new messages and process commands."""
