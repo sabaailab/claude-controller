@@ -45,6 +45,7 @@ class SlackMCPClient:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             env=env,
+            limit=10 * 1024 * 1024,  # 10MB buffer for large Slack responses
         )
 
         # MCP handshake
