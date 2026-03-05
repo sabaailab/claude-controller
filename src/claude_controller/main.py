@@ -38,9 +38,9 @@ async def async_main() -> None:
         await slack.start()
         await slack.send_message(
             "D09412DATSL",
-            "Claude Controller is online. Use `!claude <prompt>` to start a task.",
+            "Claude Controller is online. Use `claude <prompt>` to start a task.",
         )
-        logger.info("claude-controller running — send !claude commands in Slack")
+        logger.info("claude-controller running — send 'claude <prompt>' in Slack")
         await poller.run()
     except asyncio.CancelledError:
         pass

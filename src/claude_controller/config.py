@@ -16,4 +16,4 @@ CLAUDE_CWD = os.getenv("CLAUDE_CWD", os.getcwd())
 CLAUDE_MODEL = os.getenv("CLAUDE_MODEL", None)
 
 # Command prefix
-COMMAND_PREFIX = "!claude"
+COMMAND_PREFIX = "claude"

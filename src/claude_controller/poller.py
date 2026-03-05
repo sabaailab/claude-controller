@@ -17,34 +17,35 @@ _TS_PATTERN = re.compile(r'"ts":\s*"([^"]+)"')
 
 
 def _parse_messages(raw: str) -> list[dict[str, Any]]:
-    """Parse Slack messages from MCP conversations_history response.
+    """Parse Slack messages from MCP conversations_history CSV response.
 
-    The MCP tool returns formatted text, not raw JSON.
-    We try JSON first, then fall back to text parsing.
+    Format: MsgID,UserID,UserName,RealName,Channel,ThreadTs,Text,Time,Reactions,Cursor
     """
-    # Try parsing as JSON
-    try:
-        data = json.loads(raw)
-        if isinstance(data, dict) and "messages" in data:
-            return data["messages"]
-        if isinstance(data, list):
-            return data
-    except (json.JSONDecodeError, TypeError):
-        pass
+    import csv
+    import io
+    import html
 
-    # The MCP response is typically formatted text — extract message blocks
     messages = []
-    # Split by message separators (timestamps or dashes)
-    blocks = re.split(r"\n---\n|\n\n(?=\*\*)", raw.strip())
-    for block in blocks:
-        if not block.strip():
+    reader = csv.reader(io.StringIO(raw))
+
+    header = None
+    for row in reader:
+        if not row:
             continue
-        # Extract timestamp
-        ts_match = re.search(r"ts[\":][\s]*[\"']?(\d+\.\d+)", block)
-        ts = ts_match.group(1) if ts_match else ""
-        # Extract text content — look for the actual message text
-        text = block.strip()
-        messages.append({"ts": ts, "text": text})
+        # Detect header row
+        if row[0] == "MsgID":
+            header = row
+            continue
+        if len(row) < 7:
+            continue
+
+        ts = row[0].strip()
+        text = row[6].strip() if len(row) > 6 else ""
+        # Unescape HTML entities (e.g. &lt; &gt; &amp;)
+        text = html.unescape(text)
+
+        if ts:
+            messages.append({"ts": ts, "text": text})
 
     return messages
 
@@ -138,15 +139,15 @@ class Poller:
         elif command:
             await self._handle_prompt(command)
         else:
-            await self._send("Usage: `!claude <prompt>` | `!claude -reply <answer>` | `!claude -status` | `!claude -stop`")
+            await self._send("Usage: `claude <prompt>` | `claude -reply <answer>` | `claude -status` | `claude -stop`")
 
     async def _handle_prompt(self, prompt: str) -> None:
         """Start a new Claude Code task."""
         if self.session.state.running:
             if self.session.state.pending_question:
-                await self._send("Claude is waiting for your reply. Use `!claude -reply <answer>`")
+                await self._send("Claude is waiting for your reply. Use `claude -reply <answer>`")
             else:
-                await self._send("Claude is already working. Use `!claude -status` to check progress.")
+                await self._send("Claude is already working. Use `claude -status` to check progress.")
             return
 
         await self._send(f"Starting Claude session...\n> {prompt[:200]}")
@@ -167,7 +168,7 @@ class Poller:
     async def _handle_reply(self, answer: str) -> None:
         """Answer a pending Claude question."""
         if not answer:
-            await self._send("Usage: `!claude -reply <your answer>`")
+            await self._send("Usage: `claude -reply <your answer>`")
             return
 
         if not self.session.state.pending_question:
@@ -198,7 +199,7 @@ class Poller:
             lines.append(f"\n*Question:* {q.get('question', '')}")
             for i, opt in enumerate(q.get("options", [])):
                 lines.append(f"  {i+1}. {opt.get('label', '')} — {opt.get('description', '')}")
-            lines.append("\nReply with `!claude -reply <answer>`")
+            lines.append("\nReply with `claude -reply <answer>`")
         if status.get("last_output"):
             last = status["last_output"][-1]
             if len(last) > 500:
@@ -228,7 +229,7 @@ class Poller:
                 lines.append(f"  {i+1}. *{opt.get('label', '')}* — {opt.get('description', '')}")
             lines.append("")
 
-        lines.append("Reply with `!claude -reply <answer or number>`")
+        lines.append("Reply with `claude -reply <answer or number>`")
         await self._send("\n".join(lines))
 
     async def _send(self, text: str) -> None:
