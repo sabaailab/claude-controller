@@ -3,6 +3,7 @@
 import asyncio
 import json
 import logging
+import os
 from dataclasses import dataclass, field
 from typing import Any, Callable, Awaitable
 
@@ -24,10 +25,11 @@ class SessionState:
 
 
 class ClaudeSession:
-    """Manages Claude Code CLI as a subprocess with stdin/stdout pipes.
+    """Manages Claude Code CLI as a subprocess.
 
-    Uses `claude -p <prompt> --output-format stream-json` for each command.
-    Streams JSON events from stdout and posts them via on_message callback.
+    Uses `claude -p <prompt> --output-format json` which outputs a single
+    JSON result on completion. Uses `script` to force a pseudo-TTY so the
+    CLI doesn't buffer output.
     """
 
     def __init__(self) -> None:
@@ -40,12 +42,7 @@ class ClaudeSession:
         self._on_message: Callable[[str], Awaitable[None]] | None = None
 
     async def start(self, prompt: str, on_message: Any = None) -> None:
-        """Start a Claude Code CLI subprocess with the given prompt.
-
-        Args:
-            prompt: The task prompt to send to Claude.
-            on_message: Async callback(text: str) for streaming output.
-        """
+        """Start a Claude Code CLI subprocess with the given prompt."""
         if self.state.running:
             raise RuntimeError("Session already running")
 
@@ -56,9 +53,14 @@ class ClaudeSession:
         self._reader_task = asyncio.create_task(self._run(prompt))
 
     async def _run(self, prompt: str) -> None:
-        """Spawn claude CLI and stream output."""
+        """Spawn claude CLI and read output."""
         try:
-            cmd = ["claude", "-p", prompt, "--output-format", "stream-json"]
+            cmd = [
+                "claude", "-p", prompt,
+                "--output-format", "json",
+                "--mcp-config", '{"mcpServers":{}}', "--strict-mcp-config",
+                "--permission-mode", "acceptEdits",
+            ]
 
             if self.state.session_id:
                 cmd.extend(["--resume", self.state.session_id])
@@ -66,36 +68,33 @@ class ClaudeSession:
             if CLAUDE_MODEL:
                 cmd.extend(["--model", CLAUDE_MODEL])
 
-            logger.info("Starting Claude CLI: %s", " ".join(cmd[:6]) + "...")
+            logger.info("Starting Claude CLI: %s", cmd)
+            # Remove Claude env vars to allow spawning as a separate session
+            _strip = {"CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT"}
+            env = {k: v for k, v in os.environ.items() if k not in _strip}
             self._process = await asyncio.create_subprocess_exec(
                 *cmd,
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 cwd=CLAUDE_CWD,
+                env=env,
                 limit=10 * 1024 * 1024,
             )
 
-            # Read stdout line by line (stream-json emits one JSON object per line)
-            assert self._process.stdout
-            while True:
-                line = await self._process.stdout.readline()
-                if not line:
-                    break
-                await self._handle_event(line.decode().strip())
+            logger.info("Claude CLI PID: %s", self._process.pid)
 
-            # Wait for process to finish
-            await self._process.wait()
+            # Read all stdout (json format outputs everything at once on completion)
+            stdout_data, stderr_data = await self._process.communicate()
+
             exit_code = self._process.returncode
             logger.info("Claude CLI exited with code %s", exit_code)
 
-            # Read any stderr
-            if self._process.stderr:
-                stderr = await self._process.stderr.read()
-                if stderr:
-                    err_text = stderr.decode().strip()
-                    if err_text:
-                        logger.warning("Claude CLI stderr: %s", err_text[:500])
+            if stderr_data:
+                logger.warning("Claude CLI stderr: %s", stderr_data.decode().strip()[:500])
+
+            if stdout_data:
+                await self._handle_result(stdout_data.decode().strip())
 
         except asyncio.CancelledError:
             logger.info("Claude session cancelled")
@@ -110,51 +109,35 @@ class ClaudeSession:
             self.state.running = False
             self._process = None
 
-    async def _handle_event(self, line: str) -> None:
-        """Parse a stream-json event and extract useful output."""
-        if not line:
-            return
-
+    async def _handle_result(self, raw: str) -> None:
+        """Parse the JSON result from claude CLI."""
         try:
-            event = json.loads(line)
+            event = json.loads(raw)
         except json.JSONDecodeError:
-            logger.debug("Non-JSON line: %s", line[:200])
+            # Not JSON — treat as plain text
+            logger.debug("Non-JSON output: %s", raw[:200])
+            self._append_output(raw)
+            if self._on_message:
+                await self._on_message(raw)
             return
 
-        event_type = event.get("type", "")
+        # Extract session ID
+        sid = event.get("session_id")
+        if sid:
+            self.state.session_id = sid
+            logger.info("Session ID: %s", sid)
 
-        # Extract session ID from init
-        if event_type == "system" and event.get("subtype") == "init":
-            sid = event.get("session_id")
-            if sid:
-                self.state.session_id = sid
-                logger.info("Session ID: %s", sid)
+        # Extract result text
+        result_text = event.get("result", "")
+        if result_text:
+            self._append_output(result_text)
+            if self._on_message:
+                await self._on_message(result_text)
 
-        # Assistant text messages
-        elif event_type == "assistant":
-            content = event.get("message", {}).get("content", [])
-            for block in content:
-                if block.get("type") == "text" and block.get("text"):
-                    text = block["text"]
-                    self._append_output(text)
-                    if self._on_message:
-                        await self._on_message(text)
-
-        # Tool use results
-        elif event_type == "result":
-            result_text = event.get("result")
-            if result_text:
-                self._append_output(result_text)
-                if self._on_message:
-                    await self._on_message(result_text)
-
-            cost = event.get("cost_usd") or event.get("total_cost_usd")
-            if cost:
-                self.state.total_cost_usd = float(cost)
-
-            sid = event.get("session_id")
-            if sid:
-                self.state.session_id = sid
+        # Track cost
+        cost = event.get("total_cost_usd")
+        if cost:
+            self.state.total_cost_usd += float(cost)
 
     def _append_output(self, text: str) -> None:
         """Append to output buffer, trimming old entries."""
