@@ -68,6 +68,7 @@ class ClaudeSession:
             if CLAUDE_MODEL:
                 cmd.extend(["--model", CLAUDE_MODEL])
 
+            logger.info(">>> Prompt: %s", prompt[:500])
             logger.info("Starting Claude CLI: %s", cmd)
             # Remove Claude env vars to allow spawning as a separate session
             _strip = {"CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT"}
@@ -130,6 +131,7 @@ class ClaudeSession:
         # Extract result text
         result_text = event.get("result", "")
         if result_text:
+            logger.info("<<< Response: %s", result_text[:500])
             self._append_output(result_text)
             if self._on_message:
                 await self._on_message(result_text)
