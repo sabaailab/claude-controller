@@ -172,7 +172,7 @@ class Poller:
     _COMMANDS = {
         "resume": ("_handle_resume", True),
         "sessions": ("_handle_sessions", False),
-        "status": ("_handle_status", False),
+        "update": ("_handle_update", False),
         "stop": ("_handle_stop", False),
         "help": ("_handle_help", False),
     }
@@ -232,8 +232,8 @@ class Poller:
 
         await self.session.start(prompt, on_message=on_message)
 
-    async def _handle_status(self) -> None:
-        """Post what changed since last status check (diff-based for tmux)."""
+    async def _handle_update(self) -> None:
+        """Post what changed since last check (diff-based for tmux)."""
         if self.tmux:
             try:
                 output = await self.tmux.capture_pane(lines=200)
@@ -287,7 +287,7 @@ class Poller:
         await self._send(
             "*Commands* (prefix: `claude` or `c`)\n\n"
             "`c <prompt>` — send a prompt to Claude\n"
-            "`c -status` — show update since last check\n"
+            "`c -update` / `c -u` — show update since last check\n"
             "`c -stop` — stop the running session\n"
             "`c -sessions` — list recent sessions\n"
             "`c -resume <id>` — attach to a session\n"
