@@ -1,4 +1,4 @@
-"""Slack message poller — watches for /claude commands and dispatches them."""
+"""Slack message poller — watches for @claude commands and dispatches them."""
 
 import asyncio
 import json
@@ -50,7 +50,7 @@ def _parse_messages(raw: str) -> list[dict[str, Any]]:
 
 
 class Poller:
-    """Polls Slack for /claude commands and dispatches to Claude session."""
+    """Polls Slack for @claude commands and dispatches to Claude session."""
 
     def __init__(self, slack: SlackMCPClient, session: ClaudeSession) -> None:
         self.slack = slack
@@ -111,7 +111,7 @@ class Poller:
             text = msg.get("text", "").strip()
             self._last_ts = ts
 
-            # Check for /claude prefix
+            # Check for @claude prefix
             if not text.startswith(COMMAND_PREFIX):
                 continue
 
@@ -120,7 +120,7 @@ class Poller:
             await self._dispatch(remainder)
 
     async def _dispatch(self, command: str) -> None:
-        """Route a /claude command to the appropriate handler."""
+        """Route a @claude command to the appropriate handler."""
         if command.startswith("-reply"):
             answer = command[len("-reply"):].strip()
             await self._handle_reply(answer)
@@ -131,15 +131,15 @@ class Poller:
         elif command:
             await self._handle_prompt(command)
         else:
-            await self._send("Usage: `/claude <prompt>` | `/claude -reply <answer>` | `/claude -status` | `/claude -stop`")
+            await self._send("Usage: `@claude <prompt>` | `@claude -reply <answer>` | `@claude -status` | `@claude -stop`")
 
     async def _handle_prompt(self, prompt: str) -> None:
         """Start a new Claude Code task."""
         if self.session.state.running:
             if self.session.state.pending_question:
-                await self._send("Claude is waiting for your reply. Use `/claude -reply <answer>`")
+                await self._send("Claude is waiting for your reply. Use `@claude -reply <answer>`")
             else:
-                await self._send("Claude is already working. Use `/claude -status` to check progress.")
+                await self._send("Claude is already working. Use `@claude -status` to check progress.")
             return
 
         await self._send(f"Starting Claude session...\n> {prompt[:200]}")
@@ -160,7 +160,7 @@ class Poller:
     async def _handle_reply(self, answer: str) -> None:
         """Answer a pending Claude question."""
         if not answer:
-            await self._send("Usage: `/claude -reply <your answer>`")
+            await self._send("Usage: `@claude -reply <your answer>`")
             return
 
         if not self.session.state.pending_question:
@@ -191,7 +191,7 @@ class Poller:
             lines.append(f"\n*Question:* {q.get('question', '')}")
             for i, opt in enumerate(q.get("options", [])):
                 lines.append(f"  {i+1}. {opt.get('label', '')} — {opt.get('description', '')}")
-            lines.append("\nReply with `/claude -reply <answer>`")
+            lines.append("\nReply with `@claude -reply <answer>`")
         if status.get("last_output"):
             last = status["last_output"][-1]
             if len(last) > 500:
@@ -221,7 +221,7 @@ class Poller:
                 lines.append(f"  {i+1}. *{opt.get('label', '')}* — {opt.get('description', '')}")
             lines.append("")
 
-        lines.append("Reply with `/claude -reply <answer or number>`")
+        lines.append("Reply with `@claude -reply <answer or number>`")
         await self._send("\n".join(lines))
 
     async def _send(self, text: str) -> None:
