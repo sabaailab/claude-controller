@@ -116,7 +116,16 @@ class SlackMCPClient:
                 timeout=30,
             )
             if not line:
-                raise ConnectionError("MCP process closed stdout")
+                # Process died — capture stderr for diagnostics
+                stderr_msg = ""
+                if self._process.stderr:
+                    stderr_bytes = await self._process.stderr.read()
+                    stderr_msg = stderr_bytes.decode(errors="replace").strip()
+                rc = self._process.returncode
+                raise ConnectionError(
+                    f"MCP process closed stdout (exit={rc})"
+                    + (f": {stderr_msg}" if stderr_msg else "")
+                )
 
             data = json.loads(line.decode().strip())
 
