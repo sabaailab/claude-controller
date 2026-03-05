@@ -65,6 +65,11 @@ class SlackMCPClient:
         # Send initialized notification (no response expected)
         await self._send_notification("notifications/initialized", {})
 
+        # Discover available tools
+        tools_resp = await self._send_request("tools/list", {})
+        self._tools = {t["name"]: t for t in tools_resp.get("tools", [])}
+        logger.debug("MCP tools available: %s", list(self._tools.keys()))
+
     async def _send_request(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
         """Send a JSON-RPC request and wait for the response."""
         async with self._lock:
@@ -148,16 +153,20 @@ class SlackMCPClient:
         """Send a message to a Slack channel."""
         return await self.call_tool("conversations_add_message", {
             "channel_id": channel_id,
-            "text": text,
+            "payload": text,
+            "content_type": "text/markdown",
         })
 
     async def stop(self) -> None:
         """Kill the Docker container."""
         if self._process:
             logger.info("Stopping Slack MCP container...")
-            self._process.terminate()
             try:
+                self._process.terminate()
                 await asyncio.wait_for(self._process.wait(), timeout=5)
-            except asyncio.TimeoutError:
-                self._process.kill()
+            except (asyncio.TimeoutError, ProcessLookupError):
+                try:
+                    self._process.kill()
+                except ProcessLookupError:
+                    pass
             self._process = None
