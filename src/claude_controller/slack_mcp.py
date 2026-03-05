@@ -154,7 +154,7 @@ class SlackMCPClient:
         return await self.call_tool("conversations_add_message", {
             "channel_id": channel_id,
             "payload": text,
-            "content_type": "text/markdown",
+            "content_type": "text/plain",
         })
 
     async def stop(self) -> None:

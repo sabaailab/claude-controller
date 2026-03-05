@@ -1,7 +1,6 @@
 """Slack message poller — watches for !claude commands and dispatches them."""
 
 import asyncio
-import json
 import logging
 import re
 from typing import Any
@@ -11,9 +10,6 @@ from claude_controller.slack_mcp import SlackMCPClient
 from claude_controller.claude_session import ClaudeSession
 
 logger = logging.getLogger(__name__)
-
-# Parse messages from the MCP history response
-_TS_PATTERN = re.compile(r'"ts":\s*"([^"]+)"')
 
 
 def _parse_messages(raw: str) -> list[dict[str, Any]]:
@@ -118,13 +114,20 @@ class Poller:
             self._last_ts = ts
             logger.info("Message [%s]: %s", ts, text[:200])
 
-            # Check for claude prefix (case-insensitive)
-            if not text.lower().startswith(COMMAND_PREFIX.lower()):
+            # Check for claude prefix (case-insensitive) followed by space or end
+            lower = text.lower()
+            prefix = COMMAND_PREFIX.lower()
+            if not lower.startswith(prefix):
                 logger.debug("Skipping — no '%s' prefix", COMMAND_PREFIX)
+                continue
+            # Must be followed by space, dash, or end-of-string (not another word)
+            after = text[len(prefix):]
+            if after and not after[0] in (" ", "-"):
+                logger.debug("Skipping — prefix not a standalone word")
                 continue
 
             # Strip prefix and parse command
-            remainder = text[len(COMMAND_PREFIX):].strip()
+            remainder = after.strip()
             await self._dispatch(remainder)
 
     async def _dispatch(self, command: str) -> None:
@@ -234,10 +237,17 @@ class Poller:
         """Send a message to Slack and track it to avoid re-processing."""
         try:
             result = await self.slack.send_message(SLACK_CHANNEL_ID, text)
-            # Try to extract ts from result to track our own messages
-            ts_match = re.search(r'"ts":\s*"([^"]+)"', str(result))
-            if ts_match:
-                self._my_messages.add(ts_match.group(1))
+            logger.debug("Send result: %s", result[:300] if result else "empty")
+            # Extract MsgID (timestamp) from CSV response to track our own messages
+            messages = _parse_messages(result)
+            for msg in messages:
+                ts = msg.get("ts", "")
+                if ts:
+                    self._my_messages.add(ts)
+                    # Advance _last_ts so our own message is never re-processed
+                    if not self._last_ts or ts > self._last_ts:
+                        self._last_ts = ts
+                    logger.debug("Tracking own message ts: %s", ts)
         except Exception as e:
             logger.error("Failed to send Slack message: %s", e)
 
