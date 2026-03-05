@@ -78,7 +78,14 @@ class ClaudeSession:
             if self.state.session_id:
                 options.resume = self.state.session_id
 
-            async for message in query(prompt=prompt, options=options):
+            # can_use_tool requires streaming mode — wrap prompt as async iterable
+            async def _prompt_stream():
+                yield {
+                    "type": "user",
+                    "message": {"role": "user", "content": prompt},
+                }
+
+            async for message in query(prompt=_prompt_stream(), options=options):
                 # Extract session ID from init message
                 if hasattr(message, "subtype") and message.subtype == "init":
                     data = getattr(message, "data", {})
