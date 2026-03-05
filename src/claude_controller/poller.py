@@ -128,11 +128,8 @@ class Poller:
             await self._dispatch(remainder)
 
     async def _dispatch(self, command: str) -> None:
-        """Route a !claude command to the appropriate handler."""
-        if command.startswith("-reply"):
-            answer = command[len("-reply"):].strip()
-            await self._handle_reply(answer)
-        elif command.startswith("-resume"):
+        """Route a claude command to the appropriate handler."""
+        if command.startswith("-resume"):
             session_id = command[len("-resume"):].strip()
             await self._handle_resume(session_id)
         elif command.startswith("-sessions"):
@@ -144,15 +141,12 @@ class Poller:
         elif command:
             await self._handle_prompt(command)
         else:
-            await self._send("Usage: `claude <prompt>` | `claude -reply` | `claude -resume <id>` | `claude -sessions` | `claude -status` | `claude -stop`")
+            await self._send("Usage: `claude <prompt>` | `claude -resume <id>` | `claude -sessions` | `claude -status` | `claude -stop`")
 
     async def _handle_prompt(self, prompt: str) -> None:
         """Start a new Claude Code task."""
         if self.session.state.running:
-            if self.session.state.pending_question:
-                await self._send("Claude is waiting for your reply. Use `claude -reply <answer>`")
-            else:
-                await self._send("Claude is already working. Use `claude -status` to check progress.")
+            await self._send("Claude is already working. Use `claude -status` to check progress.")
             return
 
         await self._send(f"Starting Claude session...\n> {prompt[:200]}")
@@ -165,31 +159,6 @@ class Poller:
 
         await self.session.start(prompt, on_message=on_message)
 
-        # Wait briefly for the session to start, then post any question
-        await asyncio.sleep(1)
-        if self.session.state.pending_question:
-            await self._post_question()
-
-    async def _handle_reply(self, answer: str) -> None:
-        """Answer a pending Claude question."""
-        if not answer:
-            await self._send("Usage: `claude -reply <your answer>`")
-            return
-
-        if not self.session.state.pending_question:
-            if not self.session.state.running:
-                # Resume with a follow-up prompt
-                await self._handle_prompt(answer)
-                return
-            await self._send("No pending question. Claude is still working.")
-            return
-
-        ok = await self.session.reply(answer)
-        if ok:
-            await self._send(f"Replied: {answer}")
-        else:
-            await self._send("Failed to deliver reply.")
-
     async def _handle_status(self) -> None:
         """Post current session status."""
         status = self.session.get_status()
@@ -199,12 +168,6 @@ class Poller:
             lines.append(f"*Session:* `{status['session_id'][:12]}...`")
         if status.get("cost_usd"):
             lines.append(f"*Cost:* ${status['cost_usd']}")
-        if status.get("pending_question"):
-            q = status["pending_question"][0]
-            lines.append(f"\n*Question:* {q.get('question', '')}")
-            for i, opt in enumerate(q.get("options", [])):
-                lines.append(f"  {i+1}. {opt.get('label', '')} — {opt.get('description', '')}")
-            lines.append("\nReply with `claude -reply <answer>`")
         if status.get("last_output"):
             last = status["last_output"][-1]
             if len(last) > 500:
@@ -266,22 +229,6 @@ class Poller:
             return
         await self.session.stop()
         await self._send("Session stopped.")
-
-    async def _post_question(self) -> None:
-        """Post a pending AskUserQuestion to Slack."""
-        pq = self.session.state.pending_question
-        if not pq:
-            return
-
-        lines = ["*Claude has a question:*\n"]
-        for q in pq.questions:
-            lines.append(f"*{q.get('header', '')}:* {q.get('question', '')}")
-            for i, opt in enumerate(q.get("options", [])):
-                lines.append(f"  {i+1}. *{opt.get('label', '')}* — {opt.get('description', '')}")
-            lines.append("")
-
-        lines.append("Reply with `claude -reply <answer or number>`")
-        await self._send("\n".join(lines))
 
     async def _send(self, text: str) -> None:
         """Send a message to Slack and track it to avoid re-processing."""

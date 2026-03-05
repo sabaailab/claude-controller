@@ -1,27 +1,17 @@
-"""Claude Code session manager — wraps the Agent SDK for interactive sessions."""
+"""Claude Code session manager — spawns CLI as subprocess with stdin/stdout pipes."""
 
 import asyncio
+import json
 import logging
 from dataclasses import dataclass, field
-from typing import Any
-
-from claude_agent_sdk import query, ClaudeAgentOptions
-from claude_agent_sdk.types import (
-    PermissionResultAllow,
-    PermissionResultDeny,
-    HookMatcher,
-)
+from typing import Any, Callable, Awaitable
 
 from claude_controller.config import CLAUDE_CWD, CLAUDE_MODEL, CLAUDE_SESSION_ID
 
 logger = logging.getLogger(__name__)
 
-
-@dataclass
-class PendingQuestion:
-    """A question Claude is waiting for the user to answer."""
-    questions: list[dict[str, Any]]
-    answer_future: asyncio.Future
+# Max output to keep in memory
+_MAX_OUTPUT_LINES = 50
 
 
 @dataclass
@@ -30,175 +20,151 @@ class SessionState:
     session_id: str | None = None
     running: bool = False
     last_output: list[str] = field(default_factory=list)
-    pending_question: PendingQuestion | None = None
     total_cost_usd: float = 0.0
 
 
 class ClaudeSession:
-    """Manages a Claude Code session with AskUserQuestion interception."""
+    """Manages Claude Code CLI as a subprocess with stdin/stdout pipes.
+
+    Uses `claude -p <prompt> --output-format stream-json` for each command.
+    Streams JSON events from stdout and posts them via on_message callback.
+    """
 
     def __init__(self) -> None:
         self.state = SessionState()
         if CLAUDE_SESSION_ID:
             self.state.session_id = CLAUDE_SESSION_ID
-            logger.info("Resuming session: %s", CLAUDE_SESSION_ID)
-        self._task: asyncio.Task | None = None
-        self._loop: asyncio.AbstractEventLoop | None = None
+            logger.info("Will resume session: %s", CLAUDE_SESSION_ID)
+        self._process: asyncio.subprocess.Process | None = None
+        self._reader_task: asyncio.Task | None = None
+        self._on_message: Callable[[str], Awaitable[None]] | None = None
 
     async def start(self, prompt: str, on_message: Any = None) -> None:
-        """Start a new Claude Code session with the given prompt.
+        """Start a Claude Code CLI subprocess with the given prompt.
 
         Args:
             prompt: The task prompt to send to Claude.
-            on_message: Optional async callback(text: str) for streaming output.
+            on_message: Async callback(text: str) for streaming output.
         """
         if self.state.running:
             raise RuntimeError("Session already running")
 
-        self._loop = asyncio.get_running_loop()
+        self._on_message = on_message
         self.state.running = True
         self.state.last_output = []
-        self.state.pending_question = None
 
-        self._task = asyncio.create_task(self._run(prompt, on_message))
+        self._reader_task = asyncio.create_task(self._run(prompt))
 
-    async def _run(self, prompt: str, on_message: Any) -> None:
-        """Execute the Claude Code query."""
+    async def _run(self, prompt: str) -> None:
+        """Spawn claude CLI and stream output."""
         try:
-            options = ClaudeAgentOptions(
-                cwd=CLAUDE_CWD,
-                permission_mode="acceptEdits",
-                can_use_tool=self._can_use_tool,
-                hooks={
-                    "PreToolUse": [
-                        HookMatcher(matcher=None, hooks=[self._pre_tool_hook])
-                    ]
-                },
-            )
-            if CLAUDE_MODEL:
-                options.model = CLAUDE_MODEL
+            cmd = ["claude", "-p", prompt, "--output-format", "stream-json"]
 
             if self.state.session_id:
-                options.resume = self.state.session_id
+                cmd.extend(["--resume", self.state.session_id])
 
-            # can_use_tool requires streaming mode — wrap prompt as async iterable
-            async def _prompt_stream():
-                yield {
-                    "type": "user",
-                    "message": {"role": "user", "content": prompt},
-                }
+            if CLAUDE_MODEL:
+                cmd.extend(["--model", CLAUDE_MODEL])
 
-            async for message in query(prompt=_prompt_stream(), options=options):
-                # Extract session ID from init message
-                if hasattr(message, "subtype") and message.subtype == "init":
-                    data = getattr(message, "data", {})
-                    if "session_id" in data:
-                        self.state.session_id = data["session_id"]
-                        logger.info("Session ID: %s", self.state.session_id)
-
-                # Extract text from assistant messages
-                if hasattr(message, "content"):
-                    for block in message.content:
-                        if hasattr(block, "text") and block.text:
-                            self.state.last_output.append(block.text)
-                            if on_message:
-                                await on_message(block.text)
-
-                # Extract result
-                if hasattr(message, "result") and message.result:
-                    self.state.last_output.append(message.result)
-                    if on_message:
-                        await on_message(message.result)
-
-                # Track cost
-                if hasattr(message, "total_cost_usd") and message.total_cost_usd:
-                    self.state.total_cost_usd = message.total_cost_usd
-
-        except Exception as e:
-            logger.error("Claude session error: %s", e, exc_info=True)
-            self.state.last_output.append(f"Error: {e}")
-        finally:
-            self.state.running = False
-
-    async def _pre_tool_hook(self, input_data: Any, tool_use_id: str, context: Any) -> dict:
-        """Dummy hook required for can_use_tool to work in Python SDK."""
-        return {"continue_": True}
-
-    async def _can_use_tool(
-        self,
-        tool_name: str,
-        input_data: dict[str, Any],
-        context: Any,
-    ) -> PermissionResultAllow | PermissionResultDeny:
-        """Handle tool permission requests — intercepts AskUserQuestion."""
-        if tool_name == "AskUserQuestion":
-            logger.info("Claude is asking a question — waiting for user reply")
-            questions = input_data.get("questions", [])
-
-            # Create a future that the poller will resolve when user replies
-            future = asyncio.get_running_loop().create_future()
-            self.state.pending_question = PendingQuestion(
-                questions=questions,
-                answer_future=future,
+            logger.info("Starting Claude CLI: %s", " ".join(cmd[:6]) + "...")
+            self._process = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                cwd=CLAUDE_CWD,
+                limit=10 * 1024 * 1024,
             )
 
-            # Wait for the user's answer (from /claude -reply)
-            answers = await future
-            self.state.pending_question = None
-
-            return PermissionResultAllow(updated_input={
-                "questions": questions,
-                "answers": answers,
-            })
-
-        # Auto-approve all other tools
-        return PermissionResultAllow(updated_input=input_data)
-
-    async def reply(self, answer_text: str) -> bool:
-        """Resolve a pending AskUserQuestion with the user's answer.
-
-        Returns True if there was a pending question, False otherwise.
-        """
-        pq = self.state.pending_question
-        if not pq:
-            return False
-
-        # Build answers dict keyed by question text
-        answers = {}
-        for q in pq.questions:
-            question_text = q.get("question", "")
-            options = q.get("options", [])
-
-            # Try to match answer to an option label
-            matched = False
-            for opt in options:
-                if opt["label"].lower() == answer_text.lower():
-                    answers[question_text] = answer_text
-                    matched = True
+            # Read stdout line by line (stream-json emits one JSON object per line)
+            assert self._process.stdout
+            while True:
+                line = await self._process.stdout.readline()
+                if not line:
                     break
+                await self._handle_event(line.decode().strip())
 
-            # Try numeric selection
-            if not matched:
-                try:
-                    idx = int(answer_text) - 1
-                    if 0 <= idx < len(options):
-                        answers[question_text] = options[idx]["label"]
-                        matched = True
-                except (ValueError, IndexError):
-                    pass
+            # Wait for process to finish
+            await self._process.wait()
+            exit_code = self._process.returncode
+            logger.info("Claude CLI exited with code %s", exit_code)
 
-            # Default: use raw text as answer
-            if not matched:
-                answers[question_text] = answer_text
+            # Read any stderr
+            if self._process.stderr:
+                stderr = await self._process.stderr.read()
+                if stderr:
+                    err_text = stderr.decode().strip()
+                    if err_text:
+                        logger.warning("Claude CLI stderr: %s", err_text[:500])
 
-        pq.answer_future.set_result(answers)
-        return True
+        except asyncio.CancelledError:
+            logger.info("Claude session cancelled")
+            if self._process:
+                self._process.terminate()
+        except Exception as e:
+            logger.error("Claude session error: %s", e, exc_info=True)
+            self._append_output(f"Error: {e}")
+            if self._on_message:
+                await self._on_message(f"Error: {e}")
+        finally:
+            self.state.running = False
+            self._process = None
+
+    async def _handle_event(self, line: str) -> None:
+        """Parse a stream-json event and extract useful output."""
+        if not line:
+            return
+
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            logger.debug("Non-JSON line: %s", line[:200])
+            return
+
+        event_type = event.get("type", "")
+
+        # Extract session ID from init
+        if event_type == "system" and event.get("subtype") == "init":
+            sid = event.get("session_id")
+            if sid:
+                self.state.session_id = sid
+                logger.info("Session ID: %s", sid)
+
+        # Assistant text messages
+        elif event_type == "assistant":
+            content = event.get("message", {}).get("content", [])
+            for block in content:
+                if block.get("type") == "text" and block.get("text"):
+                    text = block["text"]
+                    self._append_output(text)
+                    if self._on_message:
+                        await self._on_message(text)
+
+        # Tool use results
+        elif event_type == "result":
+            result_text = event.get("result")
+            if result_text:
+                self._append_output(result_text)
+                if self._on_message:
+                    await self._on_message(result_text)
+
+            cost = event.get("cost_usd") or event.get("total_cost_usd")
+            if cost:
+                self.state.total_cost_usd = float(cost)
+
+            sid = event.get("session_id")
+            if sid:
+                self.state.session_id = sid
+
+    def _append_output(self, text: str) -> None:
+        """Append to output buffer, trimming old entries."""
+        self.state.last_output.append(text)
+        if len(self.state.last_output) > _MAX_OUTPUT_LINES:
+            self.state.last_output = self.state.last_output[-_MAX_OUTPUT_LINES:]
 
     def get_status(self) -> dict[str, Any]:
         """Return current session status."""
-        status = "idle"
-        if self.state.running:
-            status = "waiting_for_input" if self.state.pending_question else "running"
+        status = "running" if self.state.running else "idle"
 
         result: dict[str, Any] = {
             "status": status,
@@ -206,22 +172,25 @@ class ClaudeSession:
             "cost_usd": round(self.state.total_cost_usd, 4),
         }
 
-        if self.state.pending_question:
-            result["pending_question"] = self.state.pending_question.questions
-
-        # Last 3 output blocks
         if self.state.last_output:
             result["last_output"] = self.state.last_output[-3:]
 
         return result
 
     async def stop(self) -> None:
-        """Cancel the running session."""
-        if self._task and not self._task.done():
-            self._task.cancel()
+        """Kill the running CLI process."""
+        if self._process and self._process.returncode is None:
+            logger.info("Stopping Claude CLI process...")
+            self._process.terminate()
             try:
-                await self._task
+                await asyncio.wait_for(self._process.wait(), timeout=5)
+            except asyncio.TimeoutError:
+                self._process.kill()
+        if self._reader_task and not self._reader_task.done():
+            self._reader_task.cancel()
+            try:
+                await self._reader_task
             except asyncio.CancelledError:
                 pass
         self.state.running = False
-        self.state.pending_question = None
+        self._process = None
