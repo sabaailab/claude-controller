@@ -233,27 +233,55 @@ class Poller:
         await self.session.start(prompt, on_message=on_message)
 
     async def _handle_update(self) -> None:
-        """Post what changed since last check (diff-based for tmux)."""
+        """Post what changed since last check (diff-based for tmux).
+
+        Uses a sliding-window approach to find where old content ends in the
+        new pane capture, then shows everything after that point. This handles
+        terminal scrolling correctly (lines shift up as new output appears).
+        """
         if self.tmux:
             try:
                 output = await self.tmux.capture_pane(lines=200)
                 output = output.rstrip("\n")
 
-                # Compute diff: show only new lines since last snapshot
-                if self._last_pane_snapshot:
+                # Compute diff: find new lines since last snapshot
+                if self._last_pane_snapshot and output != self._last_pane_snapshot:
                     old_lines = self._last_pane_snapshot.split("\n")
                     new_lines = output.split("\n")
-                    # Find new content by stripping common prefix
-                    common = 0
-                    for i, (a, b) in enumerate(zip(old_lines, new_lines)):
-                        if a == b:
-                            common = i + 1
-                        else:
-                            break
-                    diff_lines = new_lines[common:]
+
+                    # Strategy: find the last N lines of old snapshot in the new output.
+                    # The terminal scrolls, so old content moves up. We look for a
+                    # sequence of old "anchor" lines (last 5 non-empty) in the new output,
+                    # and show everything after that anchor point.
+                    anchor_size = min(5, len(old_lines))
+                    anchor = [l for l in old_lines if l.strip()][-anchor_size:] if anchor_size else []
+
+                    diff_start = 0
+                    if anchor:
+                        # Search for the anchor sequence in new_lines
+                        for i in range(len(new_lines) - len(anchor) + 1):
+                            if new_lines[i:i + len(anchor)] == anchor:
+                                diff_start = i + len(anchor)
+
+                    if diff_start == 0 and anchor:
+                        # Anchor not found — fall back to finding last old line in new output
+                        last_old = ""
+                        for line in reversed(old_lines):
+                            if line.strip():
+                                last_old = line
+                                break
+                        if last_old:
+                            for i in range(len(new_lines) - 1, -1, -1):
+                                if new_lines[i] == last_old:
+                                    diff_start = i + 1
+                                    break
+
+                    diff_lines = new_lines[diff_start:]
                     diff = "\n".join(diff_lines).strip()
-                else:
+                elif not self._last_pane_snapshot:
                     diff = output
+                else:
+                    diff = ""
 
                 self._last_pane_snapshot = output
 
