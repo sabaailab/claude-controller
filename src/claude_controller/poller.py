@@ -135,6 +135,8 @@ class Poller:
         elif command.startswith("-resume"):
             session_id = command[len("-resume"):].strip()
             await self._handle_resume(session_id)
+        elif command.startswith("-sessions"):
+            await self._handle_sessions()
         elif command.startswith("-status"):
             await self._handle_status()
         elif command.startswith("-stop"):
@@ -142,7 +144,7 @@ class Poller:
         elif command:
             await self._handle_prompt(command)
         else:
-            await self._send("Usage: `claude <prompt>` | `claude -reply <answer>` | `claude -resume <id>` | `claude -status` | `claude -stop`")
+            await self._send("Usage: `claude <prompt>` | `claude -reply` | `claude -resume <id>` | `claude -sessions` | `claude -status` | `claude -stop`")
 
     async def _handle_prompt(self, prompt: str) -> None:
         """Start a new Claude Code task."""
@@ -209,6 +211,41 @@ class Poller:
                 last = last[-500:]
             lines.append(f"\n*Last output:*\n```{last}```")
 
+        await self._send("\n".join(lines))
+
+    async def _handle_sessions(self) -> None:
+        """List available Claude Code sessions."""
+        import glob
+        import os
+        from datetime import datetime
+
+        pattern = os.path.expanduser("~/.claude/projects/-Users-*//*.jsonl")
+        files = glob.glob(pattern)
+        if not files:
+            await self._send("No sessions found.")
+            return
+
+        # Sort by modification time, newest first
+        files.sort(key=lambda f: os.path.getmtime(f), reverse=True)
+
+        lines = ["*Recent Claude Code sessions:*\n"]
+        for f in files[:10]:
+            session_id = os.path.basename(f).replace(".jsonl", "")
+            mtime = datetime.fromtimestamp(os.path.getmtime(f))
+            size_mb = os.path.getsize(f) / (1024 * 1024)
+            project = os.path.basename(os.path.dirname(f))
+            age = datetime.now() - mtime
+            if age.total_seconds() < 3600:
+                ago = f"{int(age.total_seconds() / 60)}m ago"
+            elif age.total_seconds() < 86400:
+                ago = f"{int(age.total_seconds() / 3600)}h ago"
+            else:
+                ago = f"{int(age.days)}d ago"
+
+            active = " *(current)*" if session_id == self.session.state.session_id else ""
+            lines.append(f"`{session_id}`{active}\n  {project} · {size_mb:.1f}MB · {ago}")
+
+        lines.append(f"\nUse `claude -resume <id>` to attach.")
         await self._send("\n".join(lines))
 
     async def _handle_resume(self, session_id: str) -> None:
