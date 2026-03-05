@@ -139,6 +139,26 @@ class ClaudeSession:
         if cost:
             self.state.total_cost_usd += float(cost)
 
+        # Build stats line
+        usage = event.get("usage", {})
+        input_tokens = usage.get("input_tokens", 0) + usage.get("cache_read_input_tokens", 0) + usage.get("cache_creation_input_tokens", 0)
+        output_tokens = usage.get("output_tokens", 0)
+        duration_ms = event.get("duration_ms", 0)
+        num_turns = event.get("num_turns", 0)
+
+        parts = []
+        if input_tokens or output_tokens:
+            parts.append(f"{input_tokens}in/{output_tokens}out tokens")
+        if cost:
+            parts.append(f"${float(cost):.4f}")
+        if duration_ms:
+            parts.append(f"{duration_ms / 1000:.1f}s")
+        if num_turns and num_turns > 1:
+            parts.append(f"{num_turns} turns")
+
+        if parts and self._on_message:
+            await self._on_message(f"_{'  ·  '.join(parts)}_")
+
     def _append_output(self, text: str) -> None:
         """Append to output buffer, trimming old entries."""
         self.state.last_output.append(text)
