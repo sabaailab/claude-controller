@@ -15,14 +15,24 @@ class TmuxSession:
 
     async def send_keys(self, text: str) -> None:
         """Type *text* into the tmux pane followed by Enter."""
-        cmd = ["tmux", "send-keys", "-t", self.target, "--", text, "Enter"]
-        logger.info("send_keys → %s", " ".join(shlex.quote(c) for c in cmd))
+        # Send text literally (-l) so key names in the prompt aren't interpreted,
+        # then send Enter separately as a key name.
+        literal_cmd = ["tmux", "send-keys", "-t", self.target, "-l", text]
+        logger.info("send_keys → %s", " ".join(shlex.quote(c) for c in literal_cmd))
         proc = await asyncio.create_subprocess_exec(
-            *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+            *literal_cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
         )
         _, stderr = await proc.communicate()
         if proc.returncode != 0:
             raise RuntimeError(f"tmux send-keys failed: {stderr.decode().strip()}")
+
+        enter_cmd = ["tmux", "send-keys", "-t", self.target, "Enter"]
+        proc = await asyncio.create_subprocess_exec(
+            *enter_cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+        )
+        _, stderr = await proc.communicate()
+        if proc.returncode != 0:
+            raise RuntimeError(f"tmux send-keys Enter failed: {stderr.decode().strip()}")
 
     async def capture_pane(self, lines: int = 50) -> str:
         """Return the last *lines* lines visible in the tmux pane."""
