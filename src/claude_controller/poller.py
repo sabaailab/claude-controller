@@ -8,6 +8,7 @@ from typing import Any
 from claude_controller.config import SLACK_CHANNEL_ID, POLL_INTERVAL_SECONDS, COMMAND_PREFIX
 from claude_controller.slack_mcp import SlackMCPClient
 from claude_controller.claude_session import ClaudeSession
+from claude_controller.tmux_session import TmuxSession
 
 logger = logging.getLogger(__name__)
 
@@ -49,9 +50,10 @@ def _parse_messages(raw: str) -> list[dict[str, Any]]:
 class Poller:
     """Polls Slack for !claude commands and dispatches to Claude session."""
 
-    def __init__(self, slack: SlackMCPClient, session: ClaudeSession) -> None:
+    def __init__(self, slack: SlackMCPClient, session: ClaudeSession, tmux: TmuxSession | None = None) -> None:
         self.slack = slack
         self.session = session
+        self.tmux = tmux
         self._last_ts: str | None = None
         self._running = False
         self._my_messages: set[str] = set()  # timestamps of our own messages
@@ -147,7 +149,15 @@ class Poller:
             await self._send("Usage: `claude <prompt>` | `claude -resume <id>` | `claude -sessions` | `claude -status` | `claude -stop`")
 
     async def _handle_prompt(self, prompt: str) -> None:
-        """Start a new Claude Code task."""
+        """Start a new Claude Code task (or send to tmux)."""
+        if self.tmux:
+            await self._send(f"Sending to live session...\n> {prompt[:200]}")
+            try:
+                await self.tmux.send_keys(prompt)
+            except RuntimeError as e:
+                await self._send(f"tmux error: {e}")
+            return
+
         if self.session.state.running:
             await self._send("Claude is already working. Use `claude -status` to check progress.")
             return
@@ -163,7 +173,19 @@ class Poller:
         await self.session.start(prompt, on_message=on_message)
 
     async def _handle_status(self) -> None:
-        """Post current session status."""
+        """Post current session status (or capture tmux pane)."""
+        if self.tmux:
+            try:
+                output = await self.tmux.capture_pane()
+                # Trim trailing blank lines
+                output = output.rstrip("\n")
+                if len(output) > 3000:
+                    output = output[-3000:]
+                await self._send(f"*tmux pane `{self.tmux.target}`:*\n```\n{output}\n```")
+            except RuntimeError as e:
+                await self._send(f"tmux error: {e}")
+            return
+
         status = self.session.get_status()
         lines = [f"*Status:* {status['status']}"]
 

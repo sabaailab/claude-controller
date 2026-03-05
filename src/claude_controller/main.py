@@ -5,8 +5,10 @@ import logging
 import signal
 import sys
 
+from claude_controller.config import TMUX_TARGET
 from claude_controller.slack_mcp import SlackMCPClient
 from claude_controller.claude_session import ClaudeSession
+from claude_controller.tmux_session import TmuxSession
 from claude_controller.poller import Poller
 
 logging.basicConfig(
@@ -19,8 +21,9 @@ logger = logging.getLogger(__name__)
 
 async def async_main() -> None:
     slack = SlackMCPClient()
-    session = ClaudeSession()
-    poller = Poller(slack, session)
+    tmux = TmuxSession(TMUX_TARGET) if TMUX_TARGET else None
+    session = ClaudeSession() if not tmux else None
+    poller = Poller(slack, session, tmux=tmux)
 
     # Graceful shutdown
     loop = asyncio.get_running_loop()
@@ -36,16 +39,18 @@ async def async_main() -> None:
 
     try:
         await slack.start()
+        mode = f"tmux mode → `{TMUX_TARGET}`" if tmux else "subprocess mode"
         await slack.send_message(
             "D09412DATSL",
-            "Controller is online. Use `claude <prompt>` to start a task.",
+            f"Controller is online ({mode}). Use `claude <prompt>` to start a task.",
         )
-        logger.info("claude-controller running — send 'claude <prompt>' in Slack")
+        logger.info("claude-controller running (%s) — send 'claude <prompt>' in Slack", mode)
         await poller.run()
     except asyncio.CancelledError:
         pass
     finally:
-        await session.stop()
+        if session:
+            await session.stop()
         await slack.stop()
         logger.info("claude-controller stopped")
 

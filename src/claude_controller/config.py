@@ -16,5 +16,8 @@ CLAUDE_CWD = os.getenv("CLAUDE_CWD", os.getcwd())
 CLAUDE_MODEL = os.getenv("CLAUDE_MODEL", None)
 CLAUDE_SESSION_ID = os.getenv("CLAUDE_SESSION_ID", None)
 
+# tmux integration
+TMUX_TARGET = os.getenv("TMUX_TARGET", "")  # e.g. "claude:0.0"
+
 # Command prefix
 COMMAND_PREFIX = "claude"
