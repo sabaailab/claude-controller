@@ -50,6 +50,9 @@ def _parse_messages(raw: str) -> list[dict[str, Any]]:
 class Poller:
     """Polls Slack for !claude commands and dispatches to Claude session."""
 
+    # Accepted command prefixes (case-insensitive)
+    PREFIXES = ("claude", "c")
+
     def __init__(self, slack: SlackMCPClient, session: ClaudeSession, tmux: TmuxSession | None = None) -> None:
         self.slack = slack
         self.session = session
@@ -57,6 +60,7 @@ class Poller:
         self._last_ts: str | None = None
         self._running = False
         self._my_messages: set[str] = set()  # timestamps of our own messages
+        self._last_pane_snapshot: str = ""  # last tmux pane content for diffing
 
     async def run(self) -> None:
         """Main polling loop — resilient to transient connection failures."""
@@ -147,37 +151,62 @@ class Poller:
             self._last_ts = ts
             logger.info("Message [%s]: %s", ts, text[:200])
 
-            # Check for claude prefix (case-insensitive) followed by space or end
+            # Check for any accepted prefix (case-insensitive) followed by space, dash, or end
             lower = text.lower()
-            prefix = COMMAND_PREFIX.lower()
-            if not lower.startswith(prefix):
-                logger.debug("Skipping — no '%s' prefix", COMMAND_PREFIX)
-                continue
-            # Must be followed by space, dash, or end-of-string (not another word)
-            after = text[len(prefix):]
-            if after and not after[0] in (" ", "-"):
-                logger.debug("Skipping — prefix not a standalone word")
+            matched_prefix = None
+            for pfx in self.PREFIXES:
+                if lower.startswith(pfx):
+                    after = text[len(pfx):]
+                    if not after or after[0] in (" ", "-"):
+                        matched_prefix = pfx
+                        break
+
+            if not matched_prefix:
+                logger.debug("Skipping — no recognized prefix")
                 continue
 
-            # Strip prefix and parse command
-            remainder = after.strip()
+            remainder = text[len(matched_prefix):].strip()
             await self._dispatch(remainder)
 
+    # Map of flag name -> handler method name (and whether it takes an argument)
+    _COMMANDS = {
+        "resume": ("_handle_resume", True),
+        "sessions": ("_handle_sessions", False),
+        "status": ("_handle_status", False),
+        "stop": ("_handle_stop", False),
+        "help": ("_handle_help", False),
+    }
+
     async def _dispatch(self, command: str) -> None:
-        """Route a claude command to the appropriate handler."""
-        if command.startswith("-resume"):
-            session_id = command[len("-resume"):].strip()
-            await self._handle_resume(session_id)
-        elif command.startswith("-sessions"):
-            await self._handle_sessions()
-        elif command.startswith("-status"):
-            await self._handle_status()
-        elif command.startswith("-stop"):
-            await self._handle_stop()
-        elif command:
+        """Route a command to the appropriate handler with prefix matching."""
+        if not command:
+            await self._handle_help()
+            return
+
+        if not command.startswith("-"):
             await self._handle_prompt(command)
+            return
+
+        # Parse flag: split on first space to get flag and argument
+        parts = command[1:].split(None, 1)
+        flag = parts[0].lower()
+        arg = parts[1] if len(parts) > 1 else ""
+
+        # Find matching commands by prefix
+        matches = [name for name in self._COMMANDS if name.startswith(flag)]
+
+        if len(matches) == 1:
+            handler_name, takes_arg = self._COMMANDS[matches[0]]
+            handler = getattr(self, handler_name)
+            if takes_arg:
+                await handler(arg)
+            else:
+                await handler()
+        elif len(matches) > 1:
+            opts = ", ".join(f"`-{m}`" for m in sorted(matches))
+            await self._send(f"Ambiguous flag `-{flag}`. Did you mean: {opts}?")
         else:
-            await self._send("Usage: `claude <prompt>` | `claude -resume <id>` | `claude -sessions` | `claude -status` | `claude -stop`")
+            await self._send(f"Unknown flag `-{flag}`. Use `c -help` for commands.")
 
     async def _handle_prompt(self, prompt: str) -> None:
         """Start a new Claude Code task (or send to tmux)."""
@@ -204,15 +233,36 @@ class Poller:
         await self.session.start(prompt, on_message=on_message)
 
     async def _handle_status(self) -> None:
-        """Post current session status (or capture tmux pane)."""
+        """Post what changed since last status check (diff-based for tmux)."""
         if self.tmux:
             try:
-                output = await self.tmux.capture_pane()
-                # Trim trailing blank lines
+                output = await self.tmux.capture_pane(lines=200)
                 output = output.rstrip("\n")
-                if len(output) > 3000:
-                    output = output[-3000:]
-                await self._send(f"*tmux pane `{self.tmux.target}`:*\n```\n{output}\n```")
+
+                # Compute diff: show only new lines since last snapshot
+                if self._last_pane_snapshot:
+                    old_lines = self._last_pane_snapshot.split("\n")
+                    new_lines = output.split("\n")
+                    # Find new content by stripping common prefix
+                    common = 0
+                    for i, (a, b) in enumerate(zip(old_lines, new_lines)):
+                        if a == b:
+                            common = i + 1
+                        else:
+                            break
+                    diff_lines = new_lines[common:]
+                    diff = "\n".join(diff_lines).strip()
+                else:
+                    diff = output
+
+                self._last_pane_snapshot = output
+
+                if not diff:
+                    await self._send("No new output since last check.")
+                else:
+                    if len(diff) > 3000:
+                        diff = diff[-3000:]
+                    await self._send(f"*Update since last check:*\n```\n{diff}\n```")
             except RuntimeError as e:
                 await self._send(f"tmux error: {e}")
             return
@@ -231,6 +281,18 @@ class Poller:
             lines.append(f"\n*Last output:*\n```{last}```")
 
         await self._send("\n".join(lines))
+
+    async def _handle_help(self) -> None:
+        """Show available commands."""
+        await self._send(
+            "*Commands* (prefix: `claude` or `c`)\n\n"
+            "`c <prompt>` — send a prompt to Claude\n"
+            "`c -status` — show update since last check\n"
+            "`c -stop` — stop the running session\n"
+            "`c -sessions` — list recent sessions\n"
+            "`c -resume <id>` — attach to a session\n"
+            "`c -help` — show this help"
+        )
 
     async def _handle_sessions(self) -> None:
         """List available Claude Code sessions."""
@@ -267,10 +329,11 @@ class Poller:
         lines.append(f"\nUse `claude -resume <id>` to attach.")
         await self._send("\n".join(lines))
 
-    async def _handle_resume(self, session_id: str) -> None:
+    async def _handle_resume(self, session_id: str = "") -> None:
         """Attach to an existing Claude Code session."""
+        session_id = session_id.strip()
         if not session_id:
-            await self._send("Usage: `claude -resume <session_id>`")
+            await self._send("Usage: `c -resume <session_id>`")
             return
         if self.session.state.running:
             await self._send("Session already running. Use `claude -stop` first.")
