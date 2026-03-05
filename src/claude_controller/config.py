@@ -14,6 +14,7 @@ SLACK_MCP_XOXD_TOKEN = os.environ.get("SLACK_MCP_XOXD_TOKEN", "")
 # Claude Code
 CLAUDE_CWD = os.getenv("CLAUDE_CWD", os.getcwd())
 CLAUDE_MODEL = os.getenv("CLAUDE_MODEL", None)
+CLAUDE_SESSION_ID = os.getenv("CLAUDE_SESSION_ID", None)
 
 # Command prefix
 COMMAND_PREFIX = "claude"

@@ -12,7 +12,7 @@ from claude_agent_sdk.types import (
     HookMatcher,
 )
 
-from claude_controller.config import CLAUDE_CWD, CLAUDE_MODEL
+from claude_controller.config import CLAUDE_CWD, CLAUDE_MODEL, CLAUDE_SESSION_ID
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +39,9 @@ class ClaudeSession:
 
     def __init__(self) -> None:
         self.state = SessionState()
+        if CLAUDE_SESSION_ID:
+            self.state.session_id = CLAUDE_SESSION_ID
+            logger.info("Resuming session: %s", CLAUDE_SESSION_ID)
         self._task: asyncio.Task | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
 

@@ -132,6 +132,9 @@ class Poller:
         if command.startswith("-reply"):
             answer = command[len("-reply"):].strip()
             await self._handle_reply(answer)
+        elif command.startswith("-resume"):
+            session_id = command[len("-resume"):].strip()
+            await self._handle_resume(session_id)
         elif command.startswith("-status"):
             await self._handle_status()
         elif command.startswith("-stop"):
@@ -139,7 +142,7 @@ class Poller:
         elif command:
             await self._handle_prompt(command)
         else:
-            await self._send("Usage: `claude <prompt>` | `claude -reply <answer>` | `claude -status` | `claude -stop`")
+            await self._send("Usage: `claude <prompt>` | `claude -reply <answer>` | `claude -resume <id>` | `claude -status` | `claude -stop`")
 
     async def _handle_prompt(self, prompt: str) -> None:
         """Start a new Claude Code task."""
@@ -207,6 +210,17 @@ class Poller:
             lines.append(f"\n*Last output:*\n```{last}```")
 
         await self._send("\n".join(lines))
+
+    async def _handle_resume(self, session_id: str) -> None:
+        """Attach to an existing Claude Code session."""
+        if not session_id:
+            await self._send("Usage: `claude -resume <session_id>`")
+            return
+        if self.session.state.running:
+            await self._send("Session already running. Use `claude -stop` first.")
+            return
+        self.session.state.session_id = session_id
+        await self._send(f"Attached to session `{session_id[:16]}...`\nUse `claude <prompt>` to continue it.")
 
     async def _handle_stop(self) -> None:
         """Stop the running session."""
