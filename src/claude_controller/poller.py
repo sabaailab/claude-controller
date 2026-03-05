@@ -118,8 +118,8 @@ class Poller:
             self._last_ts = ts
             logger.info("Message [%s]: %s", ts, text[:200])
 
-            # Check for !claude prefix
-            if not text.startswith(COMMAND_PREFIX):
+            # Check for claude prefix (case-insensitive)
+            if not text.lower().startswith(COMMAND_PREFIX.lower()):
                 logger.debug("Skipping — no '%s' prefix", COMMAND_PREFIX)
                 continue
 
