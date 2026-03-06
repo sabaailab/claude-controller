@@ -120,48 +120,50 @@ class Poller:
         except Exception as e:
             logger.error("Failed to restart Slack MCP container: %s", e)
 
-    async def _poll_once(self) -> None:
-        """Check for new messages and process commands.
-
-        Reads only 1 message per poll to minimise Slack API usage.  If that
-        single message is new and starts with a recognised prefix we process
-        it; otherwise we skip immediately.  In the rare case where multiple
-        commands arrive within a single poll interval we'll catch up over
-        successive cycles (one message per cycle).
-        """
-        raw = await self.slack.read_history(SLACK_CHANNEL_ID, limit=1)
-        messages = _parse_messages(raw)
-        if not messages:
-            return
-
-        msg = messages[0]
-        ts = msg.get("ts", "")
-        if not ts:
-            return
-
-        # Skip already-seen or own messages
-        if (self._last_ts and ts <= self._last_ts) or ts in self._my_messages:
-            return
-
-        text = msg.get("text", "").strip()
-        self._last_ts = ts
-
-        # Quick prefix check — skip anything that isn't a command
+    def _match_prefix(self, text: str) -> str | None:
+        """Return the matched command prefix or None."""
         lower = text.lower()
-        matched_prefix = None
         for pfx in self.PREFIXES:
             if lower.startswith(pfx):
                 after = text[len(pfx):]
                 if not after or after[0] in (" ", "-"):
-                    matched_prefix = pfx
-                    break
+                    return pfx
+        return None
 
-        if not matched_prefix:
+    async def _poll_once(self) -> None:
+        """Check for new messages and process commands.
+
+        Fetches a small window (3 messages) to avoid missing commands that
+        arrive between polls.  Non-command messages are skipped immediately
+        after a cheap prefix check — only matching commands are dispatched.
+        """
+        raw = await self.slack.read_history(SLACK_CHANNEL_ID, limit=3)
+        messages = _parse_messages(raw)
+        if not messages:
             return
 
-        logger.info("Command [%s]: %s", ts, text[:200])
-        remainder = text[len(matched_prefix):].strip()
-        await self._dispatch(remainder)
+        # Filter to new messages only, oldest first
+        new_msgs = [
+            m for m in messages
+            if m.get("ts")
+            and (not self._last_ts or m["ts"] > self._last_ts)
+            and m["ts"] not in self._my_messages
+        ]
+        if not new_msgs:
+            return
+        new_msgs.sort(key=lambda m: m["ts"])
+
+        # Advance _last_ts to the newest message regardless of whether it's a command
+        self._last_ts = new_msgs[-1]["ts"]
+
+        for msg in new_msgs:
+            text = msg.get("text", "").strip()
+            pfx = self._match_prefix(text)
+            if not pfx:
+                continue
+            logger.info("Command [%s]: %s", msg["ts"], text[:200])
+            remainder = text[len(pfx):].strip()
+            await self._dispatch(remainder)
 
     # Map of flag name -> handler method name (and whether it takes an argument)
     _COMMANDS = {
