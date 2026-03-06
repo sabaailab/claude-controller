@@ -74,10 +74,34 @@ claude-controller
 # Poll a specific channel (env var or flag)
 CONTROLLER_SLACK_CHANNEL_ID=C0123ABCDEF claude-controller
 claude-controller --channel C0123ABCDEF
-
-# Tmux mode — forward prompts to a live Claude session
-TMUX_TARGET=claude:0.0 claude-controller
 ```
+
+### Tmux mode (recommended for live sessions)
+
+Tmux mode forwards prompts to a live interactive Claude Code session. This is the typical setup for ongoing work.
+
+**Step 1 — Start Claude Code in a tmux session:**
+
+```bash
+# Create a new tmux session named "claude"
+tmux new -s claude
+
+# Inside the tmux shell, activate your environment and start Claude Code
+source .venv/bin/activate   # or your preferred env
+claude                      # starts interactive Claude Code
+```
+
+Detach from tmux with `Ctrl-b d` (Claude keeps running in the background).
+
+**Step 2 — Start the controller pointing at that tmux pane:**
+
+```bash
+TMUX_TARGET=claude:0.0 uv run python -m claude_controller
+```
+
+`claude:0.0` refers to session `claude`, window `0`, pane `0`. The controller will type prompts directly into that pane and capture output from it.
+
+Now send commands from Slack — they'll be forwarded to the live Claude session in tmux.
 
 ### Slack commands
 
