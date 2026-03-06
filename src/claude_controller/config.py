@@ -3,7 +3,7 @@
 import os
 
 # Slack
-SLACK_CHANNEL_ID = os.environ["CONTROLLER_SLACK_CHANNEL_ID"]
+SLACK_CHANNEL_ID = os.environ.get("CONTROLLER_SLACK_CHANNEL_ID", "")
 POLL_INTERVAL_SECONDS = float(os.getenv("POLL_INTERVAL", "3"))
 
 # Slack MCP Docker container

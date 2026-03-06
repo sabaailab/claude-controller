@@ -90,6 +90,12 @@ def main() -> None:
     if args.channel:
         config.SLACK_CHANNEL_ID = args.channel
 
+    if not config.SLACK_CHANNEL_ID:
+        parser.error(
+            "No Slack channel ID configured. Set CONTROLLER_SLACK_CHANNEL_ID "
+            "environment variable or pass --channel CHANNEL_ID."
+        )
+
     try:
         asyncio.run(async_main())
     except KeyboardInterrupt:
