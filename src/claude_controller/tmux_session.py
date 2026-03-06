@@ -18,7 +18,7 @@ class TmuxSession:
         # Send text literally (-l) so key names in the prompt aren't interpreted,
         # then send Enter separately as a key name.
         literal_cmd = ["tmux", "send-keys", "-t", self.target, "-l", text]
-        logger.info("send_keys → %s", " ".join(shlex.quote(c) for c in literal_cmd))
+        logger.debug("send_keys → %s", " ".join(shlex.quote(c) for c in literal_cmd))
         proc = await asyncio.create_subprocess_exec(
             *literal_cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
         )

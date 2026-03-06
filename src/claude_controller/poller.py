@@ -99,7 +99,7 @@ class Poller:
                 messages = _parse_messages(raw)
                 if messages:
                     self._last_ts = messages[0].get("ts", "")
-                    logger.info("Initialized last_ts: %s", self._last_ts)
+                    logger.debug("Initialized last_ts: %s", self._last_ts)
                 return
             except Exception as e:
                 logger.warning("Could not init last_ts (attempt %d/3): %s", attempt + 1, e)
@@ -116,7 +116,7 @@ class Poller:
         try:
             await self.slack.start()
             self._consecutive_errors = 0
-            logger.info("Slack MCP container restarted successfully")
+            logger.debug("Slack MCP container restarted successfully")
         except Exception as e:
             logger.error("Failed to restart Slack MCP container: %s", e)
 

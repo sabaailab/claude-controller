@@ -38,7 +38,7 @@ class SlackMCPClient:
             "mcp-server", "--transport", "stdio",
         ]
 
-        logger.info("Starting Slack MCP container...")
+        logger.debug("Starting Slack MCP container...")
         self._process = await asyncio.create_subprocess_exec(
             *cmd,
             stdin=asyncio.subprocess.PIPE,
@@ -50,7 +50,7 @@ class SlackMCPClient:
 
         # MCP handshake
         await self._initialize()
-        logger.info("Slack MCP container ready")
+        logger.debug("Slack MCP container ready")
 
     async def _initialize(self) -> None:
         """Perform MCP protocol handshake."""
@@ -169,7 +169,7 @@ class SlackMCPClient:
     async def stop(self) -> None:
         """Kill the Docker container."""
         if self._process:
-            logger.info("Stopping Slack MCP container...")
+            logger.debug("Stopping Slack MCP container...")
             try:
                 self._process.terminate()
                 await asyncio.wait_for(self._process.wait(), timeout=5)

@@ -36,7 +36,7 @@ class ClaudeSession:
         self.state = SessionState()
         if CLAUDE_SESSION_ID:
             self.state.session_id = CLAUDE_SESSION_ID
-            logger.info("Will resume session: %s", CLAUDE_SESSION_ID)
+            logger.debug("Will resume session: %s", CLAUDE_SESSION_ID)
         self._process: asyncio.subprocess.Process | None = None
         self._reader_task: asyncio.Task | None = None
         self._on_message: Callable[[str], Awaitable[None]] | None = None
@@ -68,8 +68,8 @@ class ClaudeSession:
             if CLAUDE_MODEL:
                 cmd.extend(["--model", CLAUDE_MODEL])
 
-            logger.info(">>> Prompt: %s", prompt[:500])
-            logger.info("Starting Claude CLI: %s", cmd)
+            logger.info(">>> %s", prompt[:200])
+            logger.debug("CLI cmd: %s", cmd)
             # Remove Claude env vars to allow spawning as a separate session
             _strip = {"CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT"}
             env = {k: v for k, v in os.environ.items() if k not in _strip}
@@ -83,13 +83,13 @@ class ClaudeSession:
                 limit=10 * 1024 * 1024,
             )
 
-            logger.info("Claude CLI PID: %s", self._process.pid)
+            logger.debug("Claude CLI PID: %s", self._process.pid)
 
             # Read all stdout (json format outputs everything at once on completion)
             stdout_data, stderr_data = await self._process.communicate()
 
             exit_code = self._process.returncode
-            logger.info("Claude CLI exited with code %s", exit_code)
+            logger.debug("Claude CLI exited with code %s", exit_code)
 
             if stderr_data:
                 logger.warning("Claude CLI stderr: %s", stderr_data.decode().strip()[:500])
@@ -98,7 +98,7 @@ class ClaudeSession:
                 await self._handle_result(stdout_data.decode().strip())
 
         except asyncio.CancelledError:
-            logger.info("Claude session cancelled")
+            logger.debug("Claude session cancelled")
             if self._process:
                 self._process.terminate()
         except Exception as e:
@@ -126,12 +126,12 @@ class ClaudeSession:
         sid = event.get("session_id")
         if sid:
             self.state.session_id = sid
-            logger.info("Session ID: %s", sid)
+            logger.debug("Session ID: %s", sid)
 
         # Extract result text
         result_text = event.get("result", "")
         if result_text:
-            logger.info("<<< Response: %s", result_text[:500])
+            logger.info("<<< %s", result_text[:200])
             self._append_output(result_text)
             if self._on_message:
                 await self._on_message(result_text)
@@ -185,7 +185,7 @@ class ClaudeSession:
     async def stop(self) -> None:
         """Kill the running CLI process."""
         if self._process and self._process.returncode is None:
-            logger.info("Stopping Claude CLI process...")
+            logger.debug("Stopping Claude CLI process...")
             self._process.terminate()
             try:
                 await asyncio.wait_for(self._process.wait(), timeout=5)

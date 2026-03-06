@@ -14,7 +14,7 @@ from claude_controller.tmux_session import TmuxSession
 from claude_controller.poller import Poller
 
 logging.basicConfig(
-    level=logging.DEBUG,
+    level=logging.INFO,
     format="%(asctime)s %(levelname)-8s %(name)s — %(message)s",
     datefmt="%H:%M:%S",
 )
