@@ -3,6 +3,7 @@
 import argparse
 import asyncio
 import logging
+import os
 import signal
 import sys
 
@@ -38,6 +39,21 @@ async def async_main() -> None:
 
     for sig in (signal.SIGINT, signal.SIGTERM):
         loop.add_signal_handler(sig, _signal_handler)
+
+    # Warn if SLACK_MCP_ADD_MESSAGE_TOOL is not configured
+    add_msg_tool = os.environ.get("SLACK_MCP_ADD_MESSAGE_TOOL", "")
+    if not add_msg_tool or add_msg_tool == "0":
+        logger.warning(
+            "SLACK_MCP_ADD_MESSAGE_TOOL is not set — the controller will NOT be able to "
+            "post responses to Slack. Set it to 'true' or include channel %s.",
+            config.SLACK_CHANNEL_ID,
+        )
+    elif add_msg_tool not in ("true", "1") and config.SLACK_CHANNEL_ID not in add_msg_tool:
+        logger.warning(
+            "SLACK_MCP_ADD_MESSAGE_TOOL=%s does not include control channel %s — "
+            "the controller may not be able to post responses.",
+            add_msg_tool, config.SLACK_CHANNEL_ID,
+        )
 
     try:
         await slack.start()

@@ -55,7 +55,8 @@ The `claude` CLI (Claude Code) must be available on your `PATH`.
 |---|---|---|---|
 | `SLACK_MCP_XOXC_TOKEN` | Yes | — | Slack `xoxc-` session token for the MCP server |
 | `SLACK_MCP_XOXD_TOKEN` | Yes | — | Slack `xoxd-` cookie token for the MCP server |
-| `CONTROLLER_SLACK_CHANNEL_ID` | No | `D09412DATSL` | Slack channel or DM ID to poll for commands and post responses |
+| `CONTROLLER_SLACK_CHANNEL_ID` | Yes | — | Slack channel or DM ID to poll for commands and post responses |
+| `SLACK_MCP_ADD_MESSAGE_TOOL` | Yes | — | Must be set to `true` or to a comma-separated list of channel IDs the MCP server is allowed to write to. The control channel **must** be included or the controller cannot post responses. Example: `true` (allow all) or `D09412DATSL,C0123ABCDEF` (restrict to specific channels) |
 | `POLL_INTERVAL` | No | `3` | Seconds between polling Slack for new messages |
 | `CLAUDE_CWD` | No | Current directory | Working directory for spawned Claude Code processes |
 | `CLAUDE_MODEL` | No | Default model | Model to pass to `claude -p --model` |
