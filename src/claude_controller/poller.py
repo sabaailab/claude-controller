@@ -249,19 +249,19 @@ class Poller:
                     old_lines = self._last_pane_snapshot.split("\n")
                     new_lines = output.split("\n")
 
-                    # Strategy: find the last N lines of old snapshot in the new output.
-                    # The terminal scrolls, so old content moves up. We look for a
-                    # sequence of old "anchor" lines (last 5 non-empty) in the new output,
-                    # and show everything after that anchor point.
+                    # Strategy: take the last N lines of the old snapshot (including
+                    # blanks) and find the last occurrence of that exact sequence in
+                    # the new output. Everything after the anchor is new content.
                     anchor_size = min(5, len(old_lines))
-                    anchor = [l for l in old_lines if l.strip()][-anchor_size:] if anchor_size else []
+                    anchor = old_lines[-anchor_size:] if anchor_size else []
 
                     diff_start = 0
                     if anchor:
-                        # Search for the anchor sequence in new_lines
-                        for i in range(len(new_lines) - len(anchor) + 1):
+                        # Search for the last occurrence of the anchor in new_lines
+                        for i in range(len(new_lines) - len(anchor), -1, -1):
                             if new_lines[i:i + len(anchor)] == anchor:
                                 diff_start = i + len(anchor)
+                                break
 
                     if diff_start == 0 and anchor:
                         # Anchor not found — fall back to finding last old line in new output
