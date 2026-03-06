@@ -67,7 +67,7 @@ def main() -> None:
         "--channel",
         default=None,
         metavar="CHANNEL_ID",
-        help="Slack channel/DM ID to poll and respond in (overrides SLACK_CHANNEL_ID env var, default: %(default)s)",
+        help="Slack channel/DM ID to poll and respond in (overrides CONTROLLER_SLACK_CHANNEL_ID env var, default: %(default)s)",
     )
     args = parser.parse_args()
 

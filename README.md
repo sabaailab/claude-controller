@@ -55,7 +55,7 @@ The `claude` CLI (Claude Code) must be available on your `PATH`.
 |---|---|---|---|
 | `SLACK_MCP_XOXC_TOKEN` | Yes | — | Slack `xoxc-` session token for the MCP server |
 | `SLACK_MCP_XOXD_TOKEN` | Yes | — | Slack `xoxd-` cookie token for the MCP server |
-| `SLACK_CHANNEL_ID` | No | `D09412DATSL` | Slack channel or DM ID to poll for commands and post responses |
+| `CONTROLLER_SLACK_CHANNEL_ID` | No | `D09412DATSL` | Slack channel or DM ID to poll for commands and post responses |
 | `POLL_INTERVAL` | No | `3` | Seconds between polling Slack for new messages |
 | `CLAUDE_CWD` | No | Current directory | Working directory for spawned Claude Code processes |
 | `CLAUDE_MODEL` | No | Default model | Model to pass to `claude -p --model` |
@@ -71,7 +71,7 @@ The `claude` CLI (Claude Code) must be available on your `PATH`.
 claude-controller
 
 # Poll a specific channel (env var or flag)
-SLACK_CHANNEL_ID=C0123ABCDEF claude-controller
+CONTROLLER_SLACK_CHANNEL_ID=C0123ABCDEF claude-controller
 claude-controller --channel C0123ABCDEF
 
 # Tmux mode — forward prompts to a live Claude session
@@ -102,7 +102,7 @@ claude-controller --channel C0XYZ   # Override the Slack channel to poll
 
 | Flag | Description |
 |---|---|
-| `--channel CHANNEL_ID` | Slack channel ID to poll (overrides `SLACK_CHANNEL_ID` env var) |
+| `--channel CHANNEL_ID` | Slack channel ID to poll (overrides `CONTROLLER_SLACK_CHANNEL_ID` env var) |
 | `--help` | Show usage information and exit |
 
 ## How It Works
