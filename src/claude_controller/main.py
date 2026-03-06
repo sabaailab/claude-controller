@@ -1,10 +1,12 @@
 """Entry point — starts the Slack MCP client and polling loop."""
 
+import argparse
 import asyncio
 import logging
 import signal
 import sys
 
+from claude_controller import config
 from claude_controller.config import TMUX_TARGET
 from claude_controller.slack_mcp import SlackMCPClient
 from claude_controller.claude_session import ClaudeSession
@@ -41,7 +43,7 @@ async def async_main() -> None:
         await slack.start()
         mode = f"tmux mode → `{TMUX_TARGET}`" if tmux else "subprocess mode"
         await slack.send_message(
-            "D09412DATSL",
+            config.SLACK_CHANNEL_ID,
             f"Controller is online ({mode}). Use `claude <prompt>` to start a task.",
         )
         logger.info("claude-controller running (%s) — send 'claude <prompt>' in Slack", mode)
@@ -56,6 +58,22 @@ async def async_main() -> None:
 
 
 def main() -> None:
+    parser = argparse.ArgumentParser(
+        prog="claude-controller",
+        description="Slack-based controller that dispatches Claude Code agents. "
+        "Listens for 'claude <prompt>' messages in a Slack channel and runs them via the Claude CLI.",
+    )
+    parser.add_argument(
+        "--channel",
+        default=None,
+        metavar="CHANNEL_ID",
+        help="Slack channel/DM ID to poll and respond in (overrides SLACK_CHANNEL_ID env var, default: %(default)s)",
+    )
+    args = parser.parse_args()
+
+    if args.channel:
+        config.SLACK_CHANNEL_ID = args.channel
+
     try:
         asyncio.run(async_main())
     except KeyboardInterrupt:
