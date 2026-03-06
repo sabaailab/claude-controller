@@ -67,12 +67,13 @@ The `claude` CLI (Claude Code) must be available on your `PATH`.
 
 ### Starting the controller
 
+A channel ID is always required — via `CONTROLLER_SLACK_CHANNEL_ID` env var or `--channel` flag.
+
 ```bash
-# Basic — polls your DM channel
+# Using env var
 claude-controller
 
-# Poll a specific channel (env var or flag)
-CONTROLLER_SLACK_CHANNEL_ID=C0123ABCDEF claude-controller
+# Using flag
 claude-controller --channel C0123ABCDEF
 ```
 
@@ -96,7 +97,11 @@ Detach from tmux with `Ctrl-b d` (Claude keeps running in the background).
 **Step 2 — Start the controller pointing at that tmux pane:**
 
 ```bash
+# Using env var
 TMUX_TARGET=claude:0.0 uv run python -m claude_controller
+
+# Or using flag
+uv run python -m claude_controller --tmux claude:0.0
 ```
 
 `claude:0.0` refers to session `claude`, window `0`, pane `0`. The controller will type prompts directly into that pane and capture output from it.
@@ -121,13 +126,15 @@ Flags support prefix matching — `c -u` matches `-update`, `c -s` is ambiguous 
 ### CLI options
 
 ```bash
-claude-controller --help            # Show all options
-claude-controller --channel C0XYZ   # Override the Slack channel to poll
+claude-controller --help
 ```
 
 | Flag | Description |
 |---|---|
-| `--channel CHANNEL_ID` | Slack channel ID to poll (overrides `CONTROLLER_SLACK_CHANNEL_ID` env var) |
+| `--channel CHANNEL_ID` | Slack channel/DM ID to poll and respond in (overrides `CONTROLLER_SLACK_CHANNEL_ID`) |
+| `--tmux TARGET` | tmux target pane, e.g. `claude:0.0` (overrides `TMUX_TARGET`). Enables tmux mode |
+| `--cwd DIR` | Working directory for spawned Claude Code processes (overrides `CLAUDE_CWD`) |
+| `--poll-interval SECONDS` | Seconds between polls (overrides `POLL_INTERVAL`, default: 3) |
 | `--help` | Show usage information and exit |
 
 ## How It Works

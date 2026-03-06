@@ -5,10 +5,8 @@ import asyncio
 import logging
 import os
 import signal
-import sys
 
 from claude_controller import config
-from claude_controller.config import TMUX_TARGET
 from claude_controller.slack_mcp import SlackMCPClient
 from claude_controller.claude_session import ClaudeSession
 from claude_controller.tmux_session import TmuxSession
@@ -24,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 async def async_main() -> None:
     slack = SlackMCPClient()
-    tmux = TmuxSession(TMUX_TARGET) if TMUX_TARGET else None
+    tmux = TmuxSession(config.TMUX_TARGET) if config.TMUX_TARGET else None
     session = ClaudeSession() if not tmux else None
     poller = Poller(slack, session, tmux=tmux)
 
@@ -57,7 +55,7 @@ async def async_main() -> None:
 
     try:
         await slack.start()
-        mode = f"tmux mode → `{TMUX_TARGET}`" if tmux else "subprocess mode"
+        mode = f"tmux mode → `{config.TMUX_TARGET}`" if tmux else "subprocess mode"
         await slack.send_message(
             config.SLACK_CHANNEL_ID,
             f"Controller is online ({mode}). Use `claude <prompt>` to start a task.",
@@ -83,12 +81,37 @@ def main() -> None:
         "--channel",
         default=None,
         metavar="CHANNEL_ID",
-        help="Slack channel/DM ID to poll and respond in (overrides CONTROLLER_SLACK_CHANNEL_ID env var, default: %(default)s)",
+        help="Slack channel/DM ID to poll and respond in (overrides CONTROLLER_SLACK_CHANNEL_ID env var)",
+    )
+    parser.add_argument(
+        "--tmux",
+        default=None,
+        metavar="TARGET",
+        help="tmux target pane, e.g. 'claude:0.0' (overrides TMUX_TARGET env var). Enables tmux mode",
+    )
+    parser.add_argument(
+        "--cwd",
+        default=None,
+        metavar="DIR",
+        help="Working directory for spawned Claude Code processes (overrides CLAUDE_CWD env var)",
+    )
+    parser.add_argument(
+        "--poll-interval",
+        default=None,
+        type=float,
+        metavar="SECONDS",
+        help="Seconds between polling Slack for new messages (overrides POLL_INTERVAL env var, default: 3)",
     )
     args = parser.parse_args()
 
     if args.channel:
         config.SLACK_CHANNEL_ID = args.channel
+    if args.tmux:
+        config.TMUX_TARGET = args.tmux
+    if args.cwd:
+        config.CLAUDE_CWD = args.cwd
+    if args.poll_interval is not None:
+        config.POLL_INTERVAL_SECONDS = args.poll_interval
 
     if not config.SLACK_CHANNEL_ID:
         parser.error(
