@@ -121,52 +121,47 @@ class Poller:
             logger.error("Failed to restart Slack MCP container: %s", e)
 
     async def _poll_once(self) -> None:
-        """Check for new messages and process commands."""
-        raw = await self.slack.read_history(SLACK_CHANNEL_ID, limit=5)
-        logger.debug("Raw MCP response (%d chars): %s", len(raw), raw[:500])
+        """Check for new messages and process commands.
+
+        Reads only 1 message per poll to minimise Slack API usage.  If that
+        single message is new and starts with a recognised prefix we process
+        it; otherwise we skip immediately.  In the rare case where multiple
+        commands arrive within a single poll interval we'll catch up over
+        successive cycles (one message per cycle).
+        """
+        raw = await self.slack.read_history(SLACK_CHANNEL_ID, limit=1)
         messages = _parse_messages(raw)
-        logger.debug("Parsed %d messages", len(messages))
+        if not messages:
+            return
 
-        # Process only new messages (newer than _last_ts)
-        new_messages = []
-        for msg in messages:
-            ts = msg.get("ts", "")
-            if not ts:
-                continue
-            if self._last_ts and ts <= self._last_ts:
-                continue
-            if ts in self._my_messages:
-                continue
-            new_messages.append(msg)
+        msg = messages[0]
+        ts = msg.get("ts", "")
+        if not ts:
+            return
 
-        if new_messages:
-            logger.info("Found %d new message(s)", len(new_messages))
+        # Skip already-seen or own messages
+        if (self._last_ts and ts <= self._last_ts) or ts in self._my_messages:
+            return
 
-        # Process oldest first
-        new_messages.sort(key=lambda m: m.get("ts", ""))
+        text = msg.get("text", "").strip()
+        self._last_ts = ts
 
-        for msg in new_messages:
-            ts = msg.get("ts", "")
-            text = msg.get("text", "").strip()
-            self._last_ts = ts
-            logger.info("Message [%s]: %s", ts, text[:200])
+        # Quick prefix check — skip anything that isn't a command
+        lower = text.lower()
+        matched_prefix = None
+        for pfx in self.PREFIXES:
+            if lower.startswith(pfx):
+                after = text[len(pfx):]
+                if not after or after[0] in (" ", "-"):
+                    matched_prefix = pfx
+                    break
 
-            # Check for any accepted prefix (case-insensitive) followed by space, dash, or end
-            lower = text.lower()
-            matched_prefix = None
-            for pfx in self.PREFIXES:
-                if lower.startswith(pfx):
-                    after = text[len(pfx):]
-                    if not after or after[0] in (" ", "-"):
-                        matched_prefix = pfx
-                        break
+        if not matched_prefix:
+            return
 
-            if not matched_prefix:
-                logger.debug("Skipping — no recognized prefix")
-                continue
-
-            remainder = text[len(matched_prefix):].strip()
-            await self._dispatch(remainder)
+        logger.info("Command [%s]: %s", ts, text[:200])
+        remainder = text[len(matched_prefix):].strip()
+        await self._dispatch(remainder)
 
     # Map of flag name -> handler method name (and whether it takes an argument)
     _COMMANDS = {
