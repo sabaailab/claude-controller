@@ -39,11 +39,10 @@ class TmuxSession:
 
         If *ansi* is True, preserves ANSI escape sequences (``-e`` flag).
         """
-        cmd = [
-            "tmux", "capture-pane", "-t", self.target, "-p", "-S", f"-{lines}",
-        ]
+        cmd = ["tmux", "capture-pane"]
         if ansi:
-            cmd.insert(3, "-e")
+            cmd.append("-e")
+        cmd.extend(["-p", "-t", self.target, "-S", f"-{lines}"])
         proc = await asyncio.create_subprocess_exec(
             *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
         )
