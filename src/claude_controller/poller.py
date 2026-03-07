@@ -246,27 +246,32 @@ class Poller:
                     old_lines = self._last_pane_snapshot.split("\n")
                     new_lines = output.split("\n")
 
-                    # Strategy: take the last N lines of the old snapshot (including
-                    # blanks) and find the last occurrence of that exact sequence in
-                    # the new output. Everything after the anchor is new content.
-                    anchor_size = min(5, len(old_lines))
-                    anchor = old_lines[-anchor_size:] if anchor_size else []
+                    # Strategy: build an anchor from the last N *non-blank* lines
+                    # of the old snapshot, then find the last occurrence in the new
+                    # output. Using non-blank lines avoids false matches on the
+                    # trailing whitespace that tmux captures always include.
+                    non_blank_old = [(i, line) for i, line in enumerate(old_lines) if line.strip()]
+                    anchor_src = non_blank_old[-5:] if len(non_blank_old) >= 5 else non_blank_old
+                    anchor = [line for _, line in anchor_src]
 
                     diff_start = 0
                     if anchor:
                         # Search for the last occurrence of the anchor in new_lines
-                        for i in range(len(new_lines) - len(anchor), -1, -1):
-                            if new_lines[i:i + len(anchor)] == anchor:
-                                diff_start = i + len(anchor)
+                        # (only comparing non-blank lines in sequence)
+                        non_blank_new = [(i, line) for i, line in enumerate(new_lines) if line.strip()]
+                        nb_texts = [line for _, line in non_blank_new]
+                        nb_indices = [i for i, _ in non_blank_new]
+
+                        for j in range(len(nb_texts) - len(anchor), -1, -1):
+                            if nb_texts[j:j + len(anchor)] == anchor:
+                                # diff starts after the last matched line's position
+                                last_match_idx = nb_indices[j + len(anchor) - 1]
+                                diff_start = last_match_idx + 1
                                 break
 
                     if diff_start == 0 and anchor:
-                        # Anchor not found — fall back to finding last old line in new output
-                        last_old = ""
-                        for line in reversed(old_lines):
-                            if line.strip():
-                                last_old = line
-                                break
+                        # Anchor not found — fall back to finding last non-blank old line
+                        last_old = anchor[-1] if anchor else ""
                         if last_old:
                             for i in range(len(new_lines) - 1, -1, -1):
                                 if new_lines[i] == last_old:
