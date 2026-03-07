@@ -13,6 +13,26 @@ from claude_controller.ansi_to_slack import ansi_to_slack
 
 logger = logging.getLogger(__name__)
 
+# Lines matching these patterns are volatile (contain timers that change
+# every second) and must be stripped from both diff anchoring and display.
+_ANSI_STRIP = re.compile(r"\x1b\[[0-9;]*m")
+_VOLATILE_RE = re.compile(
+    r"(Beaming|Thinking|Working|Generating)"
+    r".*(\d+[smh]|\d+\.\d+s|\btokens?\b)",
+    re.IGNORECASE,
+)
+# Also match the Claude Code status/prompt bar at the bottom of the pane
+_STATUS_BAR_RE = re.compile(
+    r"(bypass permissions|esc to interrupt|shift\+tab to cycle"
+    r"|[─━═]{10,}|[⏵▪]{2,})",
+)
+
+
+def _is_volatile(line: str) -> bool:
+    """Return True if the line contains a changing timer/status indicator."""
+    plain = _ANSI_STRIP.sub("", line)
+    return bool(_VOLATILE_RE.search(plain) or _STATUS_BAR_RE.search(plain))
+
 
 def _parse_messages(raw: str) -> list[dict[str, Any]]:
     """Parse Slack messages from MCP conversations_history CSV response.
@@ -246,37 +266,35 @@ class Poller:
                 ansi_output = await self.tmux.capture_pane(lines=200, ansi=True)
                 ansi_output = ansi_output.rstrip("\n")
 
-                # Compute diff on plain text
+                # Compute diff on plain text (volatile lines excluded from matching)
                 if self._last_pane_snapshot and output != self._last_pane_snapshot:
                     old_lines = self._last_pane_snapshot.split("\n")
                     new_lines = output.split("\n")
                     ansi_lines = ansi_output.split("\n")
 
-                    # Strategy: build an anchor from the last N *non-blank* lines
-                    # of the old snapshot, then find the last occurrence in the new
-                    # output. Using non-blank lines avoids false matches on the
-                    # trailing whitespace that tmux captures always include.
-                    non_blank_old = [(i, line) for i, line in enumerate(old_lines) if line.strip()]
-                    anchor_src = non_blank_old[-5:] if len(non_blank_old) >= 5 else non_blank_old
+                    # Strategy: build an anchor from the last N *non-blank,
+                    # non-volatile* lines of the old snapshot, then find the
+                    # last occurrence in the new output.
+                    stable_old = [(i, line) for i, line in enumerate(old_lines)
+                                  if line.strip() and not _is_volatile(line)]
+                    anchor_src = stable_old[-5:] if len(stable_old) >= 5 else stable_old
                     anchor = [line for _, line in anchor_src]
 
                     diff_start = 0
                     if anchor:
-                        # Search for the last occurrence of the anchor in new_lines
-                        # (only comparing non-blank lines in sequence)
-                        non_blank_new = [(i, line) for i, line in enumerate(new_lines) if line.strip()]
-                        nb_texts = [line for _, line in non_blank_new]
-                        nb_indices = [i for i, _ in non_blank_new]
+                        # Match against stable (non-volatile) new lines
+                        stable_new = [(i, line) for i, line in enumerate(new_lines)
+                                      if line.strip() and not _is_volatile(line)]
+                        nb_texts = [line for _, line in stable_new]
+                        nb_indices = [i for i, _ in stable_new]
 
                         for j in range(len(nb_texts) - len(anchor), -1, -1):
                             if nb_texts[j:j + len(anchor)] == anchor:
-                                # diff starts after the last matched line's position
                                 last_match_idx = nb_indices[j + len(anchor) - 1]
                                 diff_start = last_match_idx + 1
                                 break
 
                     if diff_start == 0 and anchor:
-                        # Anchor not found — fall back to finding last non-blank old line
                         last_old = anchor[-1] if anchor else ""
                         if last_old:
                             for i in range(len(new_lines) - 1, -1, -1):
@@ -284,11 +302,15 @@ class Poller:
                                     diff_start = i + 1
                                     break
 
-                    # Use the same diff_start on the ANSI lines for rich output
-                    raw_diff = "\n".join(ansi_lines[diff_start:]).strip()
+                    # Use same diff_start on ANSI lines, filtering out volatile
+                    diff_ansi = [l for l in ansi_lines[diff_start:]
+                                 if not _is_volatile(l)]
+                    raw_diff = "\n".join(diff_ansi).strip()
                     diff = ansi_to_slack(raw_diff) if raw_diff else ""
                 elif not self._last_pane_snapshot:
-                    diff = ansi_to_slack(ansi_output)
+                    filtered = [l for l in ansi_output.split("\n")
+                                if not _is_volatile(l)]
+                    diff = ansi_to_slack("\n".join(filtered))
                 else:
                     diff = ""
 
