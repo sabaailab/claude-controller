@@ -47,10 +47,10 @@ class ClaudeSession:
             raise RuntimeError("Session already running")
 
         self._on_message = on_message
-        self.state.running = True
         self.state.last_output = []
 
         self._reader_task = asyncio.create_task(self._run(prompt))
+        self.state.running = True
 
     async def _run(self, prompt: str) -> None:
         """Spawn claude CLI and read output."""

@@ -48,8 +48,12 @@ class SlackMCPClient:
             limit=10 * 1024 * 1024,  # 10MB buffer for large Slack responses
         )
 
-        # MCP handshake
-        await self._initialize()
+        # MCP handshake — kill container on failure to avoid zombies
+        try:
+            await self._initialize()
+        except Exception:
+            await self.stop()
+            raise
         logger.debug("Slack MCP container ready")
 
     async def _initialize(self) -> None:
@@ -99,14 +103,16 @@ class SlackMCPClient:
 
     async def _write(self, message: dict[str, Any]) -> None:
         """Write a JSON-RPC message to stdin."""
-        assert self._process and self._process.stdin
+        if not self._process or not self._process.stdin:
+            raise ConnectionError("MCP process not running (no stdin)")
         line = json.dumps(message) + "\n"
         self._process.stdin.write(line.encode())
         await self._process.stdin.drain()
 
     async def _write_and_read(self, message: dict[str, Any]) -> dict[str, Any]:
         """Write a JSON-RPC message and read the response."""
-        assert self._process and self._process.stdout
+        if not self._process or not self._process.stdout:
+            raise ConnectionError("MCP process not running (no stdout)")
         await self._write(message)
 
         # Read response lines, skip notifications
@@ -116,18 +122,27 @@ class SlackMCPClient:
                 timeout=30,
             )
             if not line:
-                # Process died — capture stderr for diagnostics
+                # Process died — capture stderr for diagnostics (with timeout)
                 stderr_msg = ""
                 if self._process.stderr:
-                    stderr_bytes = await self._process.stderr.read()
-                    stderr_msg = stderr_bytes.decode(errors="replace").strip()
+                    try:
+                        stderr_bytes = await asyncio.wait_for(
+                            self._process.stderr.read(), timeout=5
+                        )
+                        stderr_msg = stderr_bytes.decode(errors="replace").strip()
+                    except asyncio.TimeoutError:
+                        stderr_msg = "(stderr read timed out)"
+                await self._process.wait()
                 rc = self._process.returncode
                 raise ConnectionError(
                     f"MCP process closed stdout (exit={rc})"
                     + (f": {stderr_msg}" if stderr_msg else "")
                 )
 
-            data = json.loads(line.decode().strip())
+            try:
+                data = json.loads(line.decode().strip())
+            except json.JSONDecodeError as exc:
+                raise ConnectionError(f"MCP sent invalid JSON: {exc}") from exc
 
             # Skip notifications (no "id" field)
             if "id" not in data:
