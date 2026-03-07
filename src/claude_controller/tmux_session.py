@@ -34,11 +34,16 @@ class TmuxSession:
         if proc.returncode != 0:
             raise RuntimeError(f"tmux send-keys Enter failed: {stderr.decode().strip()}")
 
-    async def capture_pane(self, lines: int = 50) -> str:
-        """Return the last *lines* lines visible in the tmux pane."""
+    async def capture_pane(self, lines: int = 50, ansi: bool = False) -> str:
+        """Return the last *lines* lines visible in the tmux pane.
+
+        If *ansi* is True, preserves ANSI escape sequences (``-e`` flag).
+        """
         cmd = [
             "tmux", "capture-pane", "-t", self.target, "-p", "-S", f"-{lines}",
         ]
+        if ansi:
+            cmd.insert(3, "-e")
         proc = await asyncio.create_subprocess_exec(
             *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
         )

@@ -9,6 +9,7 @@ from claude_controller.config import SLACK_CHANNEL_ID, POLL_INTERVAL_SECONDS, CO
 from claude_controller.slack_mcp import SlackMCPClient
 from claude_controller.claude_session import ClaudeSession
 from claude_controller.tmux_session import TmuxSession
+from claude_controller.ansi_to_slack import ansi_to_slack
 
 logger = logging.getLogger(__name__)
 
@@ -238,13 +239,18 @@ class Poller:
         """
         if self.tmux:
             try:
+                # Plain capture for diffing (no ANSI — stable text matching)
                 output = await self.tmux.capture_pane(lines=200)
                 output = output.rstrip("\n")
+                # ANSI capture for display (preserves colors/bold)
+                ansi_output = await self.tmux.capture_pane(lines=200, ansi=True)
+                ansi_output = ansi_output.rstrip("\n")
 
-                # Compute diff: find new lines since last snapshot
+                # Compute diff on plain text
                 if self._last_pane_snapshot and output != self._last_pane_snapshot:
                     old_lines = self._last_pane_snapshot.split("\n")
                     new_lines = output.split("\n")
+                    ansi_lines = ansi_output.split("\n")
 
                     # Strategy: build an anchor from the last N *non-blank* lines
                     # of the old snapshot, then find the last occurrence in the new
@@ -278,10 +284,11 @@ class Poller:
                                     diff_start = i + 1
                                     break
 
-                    diff_lines = new_lines[diff_start:]
-                    diff = "\n".join(diff_lines).strip()
+                    # Use the same diff_start on the ANSI lines for rich output
+                    raw_diff = "\n".join(ansi_lines[diff_start:]).strip()
+                    diff = ansi_to_slack(raw_diff) if raw_diff else ""
                 elif not self._last_pane_snapshot:
-                    diff = output
+                    diff = ansi_to_slack(ansi_output)
                 else:
                     diff = ""
 
@@ -290,9 +297,9 @@ class Poller:
                 if not diff:
                     await self._send("No new output since last check.")
                 else:
-                    if len(diff) > 3000:
-                        diff = diff[-3000:]
-                    await self._send(f"*Update since last check:*\n```\n{diff}\n```")
+                    if len(diff) > 3800:
+                        diff = diff[-3800:]
+                    await self._send(f"*Update:*\n{diff}")
             except RuntimeError as e:
                 await self._send(f"tmux error: {e}")
             return
