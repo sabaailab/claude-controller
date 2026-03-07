@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 # every second) and must be stripped from both diff anchoring and display.
 _ANSI_STRIP = re.compile(r"\x1b\[[0-9;]*m")
 _VOLATILE_RE = re.compile(
-    r"(Beaming|Thinking|Working|Generating)"
+    r"\w+ing\W"  # any verb ending in -ing (Beaming, Cooking, Gusting, etc.)
     r".*(\d+[smh]|\d+\.\d+s|\btokens?\b)",
     re.IGNORECASE,
 )
