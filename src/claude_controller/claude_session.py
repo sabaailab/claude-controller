@@ -53,11 +53,11 @@ class ClaudeSession:
         self.state.running = True
 
     async def _run(self, prompt: str) -> None:
-        """Spawn claude CLI and read output."""
+        """Spawn claude CLI and read streaming output."""
         try:
             cmd = [
                 "claude", "-p", prompt,
-                "--output-format", "json",
+                "--output-format", "stream-json",
                 "--mcp-config", '{"mcpServers":{}}', "--strict-mcp-config",
                 "--permission-mode", "acceptEdits",
             ]
@@ -85,17 +85,23 @@ class ClaudeSession:
 
             logger.debug("Claude CLI PID: %s", self._process.pid)
 
-            # Read all stdout (json format outputs everything at once on completion)
-            stdout_data, stderr_data = await self._process.communicate()
+            # Read streaming NDJSON lines as they arrive
+            assert self._process.stdout is not None
+            while True:
+                line = await self._process.stdout.readline()
+                if not line:
+                    break
+                await self._handle_stream_event(line.decode().strip())
+
+            # Wait for process to finish and capture stderr
+            stderr_data = await self._process.stderr.read() if self._process.stderr else b""
+            await self._process.wait()
 
             exit_code = self._process.returncode
             logger.debug("Claude CLI exited with code %s", exit_code)
 
             if stderr_data:
                 logger.warning("Claude CLI stderr: %s", stderr_data.decode().strip()[:500])
-
-            if stdout_data:
-                await self._handle_result(stdout_data.decode().strip())
 
         except asyncio.CancelledError:
             logger.debug("Claude session cancelled")
@@ -110,56 +116,113 @@ class ClaudeSession:
             self.state.running = False
             self._process = None
 
-    async def _handle_result(self, raw: str) -> None:
-        """Parse the JSON result from claude CLI."""
+    async def _handle_stream_event(self, raw: str) -> None:
+        """Parse a single streaming NDJSON event from claude CLI.
+
+        stream-json emits one JSON object per line. Key event types:
+        - {"type":"assistant","message":{"content":[{"type":"text","text":"..."},{"type":"tool_use",...}]}}
+        - {"type":"result","result":"...","session_id":"...","total_cost_usd":...,"usage":{...}}
+        - {"type":"system","message":"..."}
+        """
+        if not raw:
+            return
         try:
             event = json.loads(raw)
         except json.JSONDecodeError:
-            # Not JSON — treat as plain text
-            logger.debug("Non-JSON output: %s", raw[:200])
-            self._append_output(raw)
-            if self._on_message:
-                await self._on_message(raw)
+            logger.debug("Non-JSON stream line: %s", raw[:200])
             return
 
-        # Extract session ID
+        etype = event.get("type", "")
+
+        # Extract session ID from any event that has it
         sid = event.get("session_id")
         if sid:
             self.state.session_id = sid
-            logger.debug("Session ID: %s", sid)
 
-        # Extract result text
-        result_text = event.get("result", "")
-        if result_text:
-            logger.info("<<< %s", result_text[:200])
-            self._append_output(result_text)
-            if self._on_message:
-                await self._on_message(result_text)
+        if etype == "assistant":
+            msg = event.get("message", {})
+            for block in msg.get("content", []):
+                btype = block.get("type", "")
+                if btype == "text":
+                    text = block.get("text", "")
+                    if text.strip():
+                        logger.info("<<< %s", text[:200])
+                        self._append_output(text)
+                        if self._on_message:
+                            await self._on_message(text)
+                elif btype == "tool_use":
+                    tool_name = block.get("name", "unknown")
+                    tool_input = block.get("input", {})
+                    summary = self._summarize_tool_use(tool_name, tool_input)
+                    if summary:
+                        logger.info("🔧 %s", summary[:200])
+                        self._append_output(summary)
+                        if self._on_message:
+                            await self._on_message(summary)
 
-        # Track cost
-        cost = event.get("total_cost_usd")
-        if cost:
-            self.state.total_cost_usd += float(cost)
+        elif etype == "tool_result":
+            # Optionally log tool results (usually verbose, skip by default)
+            pass
 
-        # Build stats line
-        usage = event.get("usage", {})
-        input_tokens = usage.get("input_tokens", 0) + usage.get("cache_read_input_tokens", 0) + usage.get("cache_creation_input_tokens", 0)
-        output_tokens = usage.get("output_tokens", 0)
-        duration_ms = event.get("duration_ms", 0)
-        num_turns = event.get("num_turns", 0)
+        elif etype == "result":
+            # Final result event — extract stats
+            result_text = event.get("result", "")
+            if result_text:
+                logger.info("<<< %s", result_text[:200])
+                self._append_output(result_text)
+                if self._on_message:
+                    await self._on_message(result_text)
 
-        parts = []
-        if input_tokens or output_tokens:
-            parts.append(f"{input_tokens}in/{output_tokens}out tokens")
-        if cost:
-            parts.append(f"${float(cost):.4f}")
-        if duration_ms:
-            parts.append(f"{duration_ms / 1000:.1f}s")
-        if num_turns and num_turns > 1:
-            parts.append(f"{num_turns} turns")
+            cost = event.get("total_cost_usd")
+            if cost:
+                self.state.total_cost_usd += float(cost)
 
-        if parts and self._on_message:
-            await self._on_message(f"_{'  ·  '.join(parts)}_")
+            usage = event.get("usage", {})
+            input_tokens = usage.get("input_tokens", 0) + usage.get("cache_read_input_tokens", 0) + usage.get("cache_creation_input_tokens", 0)
+            output_tokens = usage.get("output_tokens", 0)
+            duration_ms = event.get("duration_ms", 0)
+            num_turns = event.get("num_turns", 0)
+
+            parts = []
+            if input_tokens or output_tokens:
+                parts.append(f"{input_tokens}in/{output_tokens}out tokens")
+            if cost:
+                parts.append(f"${float(cost):.4f}")
+            if duration_ms:
+                parts.append(f"{duration_ms / 1000:.1f}s")
+            if num_turns and num_turns > 1:
+                parts.append(f"{num_turns} turns")
+
+            if parts and self._on_message:
+                await self._on_message(f"_{'  ·  '.join(parts)}_")
+
+    @staticmethod
+    def _summarize_tool_use(tool_name: str, tool_input: dict) -> str:
+        """Create a human-readable summary of a tool call."""
+        if tool_name == "Edit":
+            fp = tool_input.get("file_path", "?")
+            old = (tool_input.get("old_string", "") or "")[:60]
+            return f"✏️  *Edit* `{fp}` — replacing `{old}...`"
+        elif tool_name == "Write":
+            fp = tool_input.get("file_path", "?")
+            return f"📝  *Write* `{fp}`"
+        elif tool_name == "Read":
+            fp = tool_input.get("file_path", "?")
+            return f"📖  *Read* `{fp}`"
+        elif tool_name == "Bash":
+            cmd = (tool_input.get("command", "") or "")[:100]
+            return f"💻  *Bash* `{cmd}`"
+        elif tool_name == "Glob":
+            pat = tool_input.get("pattern", "?")
+            return f"🔍  *Glob* `{pat}`"
+        elif tool_name == "Grep":
+            pat = tool_input.get("pattern", "?")
+            return f"🔍  *Grep* `{pat}`"
+        elif tool_name == "Agent":
+            desc = tool_input.get("description", "?")
+            return f"🤖  *Agent* {desc}"
+        else:
+            return f"🔧  *{tool_name}*"
 
     def _append_output(self, text: str) -> None:
         """Append to output buffer, trimming old entries."""
