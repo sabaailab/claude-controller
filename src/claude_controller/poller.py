@@ -2,36 +2,16 @@
 
 import asyncio
 import logging
-import re
+import os
 from typing import Any
 
 from claude_controller.config import SLACK_CHANNEL_ID, POLL_INTERVAL_SECONDS, COMMAND_PREFIX
 from claude_controller.slack_mcp import SlackMCPClient
 from claude_controller.claude_session import ClaudeSession
 from claude_controller.tmux_session import TmuxSession
-from claude_controller.ansi_to_slack import ansi_to_slack
+from claude_controller.log_tailer import LogTailer, format_entries_for_slack
 
 logger = logging.getLogger(__name__)
-
-# Lines matching these patterns are volatile (contain timers that change
-# every second) and must be stripped from both diff anchoring and display.
-_ANSI_STRIP = re.compile(r"\x1b\[[0-9;]*m")
-_VOLATILE_RE = re.compile(
-    r"\w+ing\W"  # any verb ending in -ing (Beaming, Cooking, Gusting, etc.)
-    r".*(\d+[smh]|\d+\.\d+s|\btokens?\b)",
-    re.IGNORECASE,
-)
-# Also match the Claude Code status/prompt bar at the bottom of the pane
-_STATUS_BAR_RE = re.compile(
-    r"(bypass permissions|esc to interrupt|shift\+tab to cycle"
-    r"|[─━═]{10,}|[⏵▪]{2,})",
-)
-
-
-def _is_volatile(line: str) -> bool:
-    """Return True if the line contains a changing timer/status indicator."""
-    plain = _ANSI_STRIP.sub("", line)
-    return bool(_VOLATILE_RE.search(plain) or _STATUS_BAR_RE.search(plain))
 
 
 def _parse_messages(raw: str) -> list[dict[str, Any]]:
@@ -81,7 +61,7 @@ class Poller:
         self._last_ts: str | None = None
         self._running = False
         self._my_messages: set[str] = set()  # timestamps of our own messages
-        self._last_pane_snapshot: str = ""  # last tmux pane content for diffing
+        self._log_tailer = LogTailer()  # tracks Claude's JSONL log by byte offset
 
     async def run(self) -> None:
         """Main polling loop — resilient to transient connection failures."""
@@ -229,6 +209,8 @@ class Poller:
     async def _handle_prompt(self, prompt: str) -> None:
         """Start a new Claude Code task (or send to tmux)."""
         if self.tmux:
+            # Re-attach log tailer so -update captures output from this prompt onward
+            self._log_tailer.attach()
             await self._send(f"Sending to live session...\n> {prompt[:200]}")
             try:
                 await self.tmux.send_keys(prompt)
@@ -251,79 +233,35 @@ class Poller:
         await self.session.start(prompt, on_message=on_message)
 
     async def _handle_update(self) -> None:
-        """Post what changed since last check (diff-based for tmux).
+        """Post new output since last check by tailing Claude's JSONL log.
 
-        Uses a sliding-window approach to find where old content ends in the
-        new pane capture, then shows everything after that point. This handles
-        terminal scrolling correctly (lines shift up as new output appears).
+        Reads new lines from the log file by byte offset — no tmux
+        capture, no ANSI parsing, no content diffing.  Just structured
+        data straight from Claude Code's conversation log.
         """
         if self.tmux:
-            try:
-                # Plain capture for diffing (no ANSI — stable text matching)
-                output = await self.tmux.capture_pane(lines=200)
-                output = output.rstrip("\n")
-                # ANSI capture for display (preserves colors/bold)
-                ansi_output = await self.tmux.capture_pane(lines=200, ansi=True)
-                ansi_output = ansi_output.rstrip("\n")
-
-                # Compute diff on plain text (volatile lines excluded from matching)
-                if self._last_pane_snapshot and output != self._last_pane_snapshot:
-                    old_lines = self._last_pane_snapshot.split("\n")
-                    new_lines = output.split("\n")
-                    ansi_lines = ansi_output.split("\n")
-
-                    # Strategy: build an anchor from the last N *non-blank,
-                    # non-volatile* lines of the old snapshot, then find the
-                    # last occurrence in the new output.
-                    stable_old = [(i, line) for i, line in enumerate(old_lines)
-                                  if line.strip() and not _is_volatile(line)]
-                    anchor_src = stable_old[-5:] if len(stable_old) >= 5 else stable_old
-                    anchor = [line for _, line in anchor_src]
-
-                    diff_start = 0
-                    if anchor:
-                        # Match against stable (non-volatile) new lines
-                        stable_new = [(i, line) for i, line in enumerate(new_lines)
-                                      if line.strip() and not _is_volatile(line)]
-                        nb_texts = [line for _, line in stable_new]
-                        nb_indices = [i for i, _ in stable_new]
-
-                        for j in range(len(nb_texts) - len(anchor), -1, -1):
-                            if nb_texts[j:j + len(anchor)] == anchor:
-                                last_match_idx = nb_indices[j + len(anchor) - 1]
-                                diff_start = last_match_idx + 1
-                                break
-
-                    if diff_start == 0 and anchor:
-                        last_old = anchor[-1] if anchor else ""
-                        if last_old:
-                            for i in range(len(new_lines) - 1, -1, -1):
-                                if new_lines[i] == last_old:
-                                    diff_start = i + 1
-                                    break
-
-                    # Use same diff_start on ANSI lines, filtering out volatile
-                    diff_ansi = [l for l in ansi_lines[diff_start:]
-                                 if not _is_volatile(l)]
-                    raw_diff = "\n".join(diff_ansi).strip()
-                    diff = ansi_to_slack(raw_diff) if raw_diff else ""
-                elif not self._last_pane_snapshot:
-                    filtered = [l for l in ansi_output.split("\n")
-                                if not _is_volatile(l)]
-                    diff = ansi_to_slack("\n".join(filtered))
+            # Attach to log on first call (seeks to current end)
+            if not self._log_tailer.path:
+                path = self._log_tailer.attach()
+                if path:
+                    await self._send(f"Tracking log: `{os.path.basename(path)}`\nUse `c -u` again to see new output.")
                 else:
-                    diff = ""
+                    await self._send("Could not find Claude Code log file.")
+                return
 
-                self._last_pane_snapshot = output
+            entries = self._log_tailer.get_new_entries()
+            if not entries:
+                await self._send("No new output since last check.")
+                return
 
-                if not diff:
-                    await self._send("No new output since last check.")
-                else:
-                    if len(diff) > 3800:
-                        diff = diff[-3800:]
-                    await self._send(f"*Update:*\n{diff}")
-            except RuntimeError as e:
-                await self._send(f"tmux error: {e}")
+            text = format_entries_for_slack(entries)
+            if not text.strip():
+                await self._send("No new output since last check.")
+                return
+
+            if len(text) > 3800:
+                text = text[-3800:]
+            await self._send(f"*Update:*\n{text}")
             return
 
         status = self.session.get_status()

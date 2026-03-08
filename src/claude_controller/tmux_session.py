@@ -50,3 +50,20 @@ class TmuxSession:
         if proc.returncode != 0:
             raise RuntimeError(f"tmux capture-pane failed: {stderr.decode().strip()}")
         return stdout.decode()
+
+    async def capture_full_scrollback(self, ansi: bool = False) -> str:
+        """Capture the entire scrollback buffer plus visible pane content.
+
+        Uses ``-S -`` (start of history) and ``-E -`` (end) to get everything.
+        """
+        cmd = ["tmux", "capture-pane"]
+        if ansi:
+            cmd.append("-e")
+        cmd.extend(["-p", "-t", self.target, "-S", "-", "-E", "-"])
+        proc = await asyncio.create_subprocess_exec(
+            *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await proc.communicate()
+        if proc.returncode != 0:
+            raise RuntimeError(f"tmux capture-pane failed: {stderr.decode().strip()}")
+        return stdout.decode()
