@@ -60,6 +60,7 @@ class Poller:
         self.tmux = tmux
         self._last_ts: str | None = None
         self._running = False
+        self._interactive = False  # auto-send new output after each poll
         self._my_messages: set[str] = set()  # timestamps of our own messages
         self._log_tailer = LogTailer()  # tracks Claude's JSONL log by byte offset
 
@@ -140,37 +141,39 @@ class Poller:
         """
         raw = await self.slack.read_history(SLACK_CHANNEL_ID, limit=3)
         messages = _parse_messages(raw)
-        if not messages:
-            return
 
-        # Filter to new messages only, oldest first
-        new_msgs = [
-            m for m in messages
-            if m.get("ts")
-            and (not self._last_ts or m["ts"] > self._last_ts)
-            and m["ts"] not in self._my_messages
-        ]
-        if not new_msgs:
-            return
-        new_msgs.sort(key=lambda m: m["ts"])
+        if messages:
+            # Filter to new messages only, oldest first
+            new_msgs = [
+                m for m in messages
+                if m.get("ts")
+                and (not self._last_ts or m["ts"] > self._last_ts)
+                and m["ts"] not in self._my_messages
+            ]
+            if new_msgs:
+                new_msgs.sort(key=lambda m: m["ts"])
+                # Advance _last_ts to the newest message regardless of whether it's a command
+                self._last_ts = new_msgs[-1]["ts"]
 
-        # Advance _last_ts to the newest message regardless of whether it's a command
-        self._last_ts = new_msgs[-1]["ts"]
+                for msg in new_msgs:
+                    text = msg.get("text", "").strip()
+                    pfx = self._match_prefix(text)
+                    if not pfx:
+                        continue
+                    logger.info("Command [%s]: %s", msg["ts"], text[:200])
+                    remainder = text[len(pfx):].strip()
+                    await self._dispatch(remainder)
 
-        for msg in new_msgs:
-            text = msg.get("text", "").strip()
-            pfx = self._match_prefix(text)
-            if not pfx:
-                continue
-            logger.info("Command [%s]: %s", msg["ts"], text[:200])
-            remainder = text[len(pfx):].strip()
-            await self._dispatch(remainder)
+        # Interactive mode: auto-send new log output every poll cycle
+        if self._interactive:
+            await self._auto_update()
 
     # Map of flag name -> handler method name (and whether it takes an argument)
     _COMMANDS = {
         "resume": ("_handle_resume", True),
         "sessions": ("_handle_sessions", False),
         "update": ("_handle_update", False),
+        "interactive": ("_handle_interactive", True),
         "stop": ("_handle_stop", False),
         "help": ("_handle_help", False),
     }
@@ -279,12 +282,58 @@ class Poller:
 
         await self._send("\n".join(lines))
 
+    async def _handle_interactive(self, arg: str = "") -> None:
+        """Toggle interactive mode — auto-send new output after each poll."""
+        arg = arg.strip().lower()
+        if arg in ("off", "0", "false", "no"):
+            self._interactive = False
+            await self._send("Interactive mode *off*. Use `c -u` for manual updates.")
+            return
+        if arg in ("on", "1", "true", "yes", ""):
+            # Ensure log tailer is attached
+            if self.tmux and not self._log_tailer.path:
+                self._log_tailer.attach()
+            self._interactive = True
+            await self._send("Interactive mode *on*. New output will be sent automatically each poll cycle.")
+            return
+        await self._send("Usage: `c -interactive [on|off]`")
+
+    async def _auto_update(self) -> None:
+        """Send new log output if any — called automatically in interactive mode."""
+        if self.tmux:
+            if not self._log_tailer.path:
+                path = self._log_tailer.attach()
+                if not path:
+                    return
+            entries = self._log_tailer.get_new_entries()
+            if not entries:
+                return
+            text = format_entries_for_slack(entries)
+            if not text.strip():
+                return
+            if len(text) > 3800:
+                text = text[-3800:]
+            await self._send(text)
+            return
+
+        # Subprocess mode: send last output if session is running
+        if self.session and self.session.state.running:
+            status = self.session.get_status()
+            if status.get("last_output"):
+                last = status["last_output"][-1]
+                if len(last) > 1500:
+                    last = last[-1500:]
+                await self._send(f"```{last}```")
+
     async def _handle_help(self) -> None:
         """Show available commands."""
+        interactive_status = "on" if self._interactive else "off"
         await self._send(
             "*Commands* (prefix: `claude` or `c`)\n\n"
             "`c <prompt>` — send a prompt to Claude\n"
             "`c -update` / `c -u` — show update since last check\n"
+            "`c -interactive` / `c -i` — toggle auto-update mode (currently *" + interactive_status + "*)\n"
+            "`c -interactive off` — turn off auto-update\n"
             "`c -stop` — stop the running session\n"
             "`c -sessions` — list recent sessions\n"
             "`c -resume <id>` — attach to a session\n"
