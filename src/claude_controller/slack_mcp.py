@@ -4,11 +4,67 @@ import asyncio
 import json
 import logging
 import os
+import platform
+import shutil
+import subprocess
 from typing import Any
 
 from claude_controller.config import SLACK_MCP_IMAGE
 
 logger = logging.getLogger(__name__)
+
+
+async def _ensure_docker() -> None:
+    """Ensure the Docker daemon is running, starting OrbStack/Docker Desktop if needed."""
+    # Quick check: is docker already responsive?
+    if shutil.which("docker"):
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "docker", "info",
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+            await asyncio.wait_for(proc.wait(), timeout=5)
+            if proc.returncode == 0:
+                return
+        except (asyncio.TimeoutError, OSError):
+            pass
+
+    if platform.system() != "Darwin":
+        raise RuntimeError("Docker daemon is not running. Please start it manually.")
+
+    # Try OrbStack first, then Docker Desktop
+    started = False
+    for app in ("OrbStack", "Docker"):
+        app_path = f"/Applications/{app}.app"
+        if os.path.isdir(app_path):
+            logger.info("Docker not running — starting %s...", app)
+            subprocess.run(["open", "-a", app], check=False)
+            started = True
+            break
+
+    if not started:
+        raise RuntimeError(
+            "Docker daemon is not running and neither OrbStack nor Docker Desktop found."
+        )
+
+    # Wait for Docker to become responsive (up to 30s)
+    for i in range(30):
+        await asyncio.sleep(1)
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "docker", "info",
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+            await asyncio.wait_for(proc.wait(), timeout=5)
+            if proc.returncode == 0:
+                logger.info("Docker is ready (took %ds)", i + 1)
+                return
+        except (asyncio.TimeoutError, OSError):
+            pass
+
+    raise RuntimeError("Docker daemon did not start within 30 seconds.")
 
 
 class SlackMCPClient:
@@ -21,6 +77,7 @@ class SlackMCPClient:
 
     async def start(self) -> None:
         """Spawn the Docker container and perform MCP handshake."""
+        await _ensure_docker()
         env = os.environ.copy()
 
         image = SLACK_MCP_IMAGE

@@ -54,7 +54,19 @@ async def async_main() -> None:
         )
 
     try:
-        await slack.start()
+        # Retry initial startup — Docker/OrbStack may need time to come up
+        for attempt in range(5):
+            try:
+                await slack.start()
+                break
+            except (ConnectionError, RuntimeError, OSError) as e:
+                if attempt == 4:
+                    raise
+                wait = 5 * (attempt + 1)
+                logger.warning("Startup failed (attempt %d/5): %s — retrying in %ds", attempt + 1, e, wait)
+                await slack.stop()
+                await asyncio.sleep(wait)
+
         mode = f"tmux mode → `{config.TMUX_TARGET}`" if tmux else "subprocess mode"
         await slack.send_message(
             config.SLACK_CHANNEL_ID,
