@@ -48,8 +48,8 @@ async def _ensure_docker() -> None:
             "Docker daemon is not running and neither OrbStack nor Docker Desktop found."
         )
 
-    # Wait for Docker to become responsive (up to 30s)
-    for i in range(30):
+    # Wait for Docker to become responsive (up to 90s — OrbStack can be slow after sleep)
+    for i in range(90):
         await asyncio.sleep(1)
         try:
             proc = await asyncio.create_subprocess_exec(
@@ -64,7 +64,7 @@ async def _ensure_docker() -> None:
         except (asyncio.TimeoutError, OSError):
             pass
 
-    raise RuntimeError("Docker daemon did not start within 30 seconds.")
+    raise RuntimeError("Docker daemon did not start within 90 seconds.")
 
 
 class SlackMCPClient:

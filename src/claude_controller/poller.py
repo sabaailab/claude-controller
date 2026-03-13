@@ -81,10 +81,15 @@ class Poller:
             except (ConnectionError, RuntimeError, asyncio.TimeoutError, OSError) as e:
                 self._consecutive_errors += 1
                 backoff = min(30, POLL_INTERVAL_SECONDS * self._consecutive_errors)
+                err_str = str(e)
+                is_transient = "TLS error" in err_str or "Timeout exceeded" in err_str or "EOF" in err_str
                 logger.warning("Poll connection error (%d consecutive): %s — retrying in %.0fs",
                                self._consecutive_errors, e, backoff)
-                # Restart MCP container after 3 consecutive failures
-                if self._consecutive_errors >= 3:
+                # Only restart MCP container if process is dead, not on transient API errors
+                if self._consecutive_errors >= 3 and not is_transient:
+                    await self._restart_slack()
+                # After many transient failures, restart anyway as last resort
+                elif self._consecutive_errors >= 10:
                     await self._restart_slack()
                 await asyncio.sleep(backoff)
                 continue
